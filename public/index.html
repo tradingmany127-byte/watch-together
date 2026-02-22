@@ -1,386 +1,88 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ru">
 <head>
-  <meta charset="UTF-8" />
+  <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Watch Night</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="/socket.io/socket.io.js"></script>
 
-  <style>
-    html, body { margin:0; min-height:100vh; font-family: Arial, sans-serif; background:#0f172a; color:#fff; }
-    .wrap { max-width: 980px; margin: 0 auto; padding: 16px; }
-    .card { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); border-radius: 16px; padding: 16px; backdrop-filter: blur(10px); }
-    .row { display:flex; gap:12px; flex-wrap:wrap; align-items:center; }
-    input { padding:10px 12px; border-radius:10px; border:1px solid rgba(255,255,255,0.14); background: rgba(255,255,255,0.08); color:#fff; outline:none; }
-    input::placeholder { color: rgba(255,255,255,0.55); }
-    button { padding:10px 12px; border-radius:10px; border:1px solid rgba(255,255,255,0.14); background: rgba(255,255,255,0.10); color:#fff; cursor:pointer; }
-    button:hover { background: rgba(255,255,255,0.16); }
-    .btnBlue { background:#3b82f6; border-color:#3b82f6; }
-    .btnBlue:hover { filter: brightness(1.05); }
-    .status { margin-top: 10px; color: rgba(255,255,255,0.9); font-size: 14px; min-height: 20px; }
-    .grid { display:grid; grid-template-columns: 1.2fr 0.8fr; gap:12px; margin-top:12px; }
-    @media (max-width: 900px){ .grid{ grid-template-columns:1fr; } }
-    #player { width:100%; aspect-ratio: 16/9; background: rgba(0,0,0,0.35); border-radius: 12px; overflow:hidden; }
-    .chatBox { height: 260px; overflow:auto; padding:10px; border-radius:12px; border:1px solid rgba(255,255,255,0.12); background: rgba(0,0,0,0.18); }
-    .msg { margin: 8px 0; }
-    .sys { opacity:0.75; font-size: 13px; }
-    .pill { display:inline-block; padding: 6px 10px; border-radius:999px; border:1px solid rgba(255,255,255,0.15); background: rgba(255,255,255,0.06); font-size: 12px; }
-  </style>
+  <!-- YouTube IFrame API -->
+  <script>
+    function onYouTubeIframeAPIReady() { window.__YT_READY__ = true; }
+  </script>
+  <script src="https://www.youtube.com/iframe_api"></script>
 </head>
 
 <body>
-  <div class="wrap">
-    <h2 style="margin: 6px 0 14px;">🌙 Watch Night</h2>
-
-    <div class="card">
-      <div class="row">
-        <input id="room" placeholder="Room ID (например 123)" />
-        <button id="joinBtn" class="btnBlue">Join</button>
-
-        <span class="pill" id="rolePill">Role: viewer</span>
-        <button id="hostBtn">Я Host</button>
-
-        <button id="voiceBtn">🎙 Voice (вкл)</button>
+  <div class="app">
+    <div class="header">
+      <div class="brand">
+        <div class="moon">🌙</div>
+        <div class="title">Watch Night</div>
       </div>
 
-      <div style="height:10px"></div>
+      <div class="header-right">
+        <button class="icon-btn" id="settingsBtn" title="Настройки">⚙️</button>
+        <div class="menu" id="settingsMenu">
+          <div class="menu-hint">Настройки (пока меню-заглушка)</div>
+          <div class="menu-sep"></div>
+          <button class="menu-item" id="copyInviteBtn">Copy invite link</button>
+          <label class="menu-toggle">
+            <input type="checkbox" id="autoSyncToggle" checked />
+            Auto-sync
+          </label>
+        </div>
+      </div>
+    </div>
 
+    <div class="panel top-panel">
       <div class="row">
-        <input id="url" style="flex:1; min-width: 260px;" placeholder="YouTube link (https://...)" />
-        <button id="sendVideoBtn" class="btnBlue">Send Video</button>
+        <input id="roomId" class="input" placeholder="Room ID (например 123)" />
+        <button id="joinBtn" class="btn btn-primary">Join</button>
+
+        <div class="pill" id="rolePill">Role: viewer</div>
+        <button id="hostBtn" class="btn">Я Host</button>
+        <button id="voiceBtn" class="btn btn-ghost">🎙 Voice (вкл)</button>
+
+        <button id="leaveBtn" class="btn btn-danger" disabled>Leave</button>
       </div>
 
-      <div class="status" id="status"></div>
+      <div class="row">
+        <input id="username" class="input input-wide" placeholder="Имя пользователя" />
+      </div>
+
+      <div class="row">
+        <input id="ytLink" class="input input-wide" placeholder="YouTube link (https://...)" />
+        <button id="sendVideoBtn" class="btn btn-primary">Send Video</button>
+      </div>
+
+      <div class="status" id="statusLine">✅ Плеер готов. Войди в комнату.</div>
     </div>
 
     <div class="grid">
-      <div class="card">
-        <div id="player"></div>
+      <div class="panel video-panel">
+        <div class="panel-title">YouTube</div>
+        <div class="video-wrap">
+          <div id="player" class="player"></div>
+          <div class="video-overlay" id="videoOverlay">
+            <div class="overlay-text">Вставь YouTube ссылку и нажми <b>Send Video</b></div>
+          </div>
+        </div>
+        <div class="small-hint">Только Host управляет play/pause/seek — у всех синхрон.</div>
       </div>
 
-      <div class="card">
-        <div class="chatBox" id="chatBox"></div>
-        <div style="height:10px"></div>
-        <div class="row">
-          <input id="chatInput" style="flex:1" placeholder="Напиши сообщение..." />
-          <button id="chatSend">Send</button>
+      <div class="panel chat-panel">
+        <div class="panel-title">Чат</div>
+        <div id="chatBox" class="chatBox"></div>
+        <div class="chatRow">
+          <input id="chatInput" class="input input-wide" placeholder="Напиши сообщение..." />
+          <button id="chatSendBtn" class="btn btn-primary">Send</button>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- audio для voice -->
-  <audio id="remoteAudio" autoplay playsinline></audio>
-
-  <script src="/socket.io/socket.io.js"></script>
-  <script src="https://www.youtube.com/iframe_api"></script>
-
-  <script>
-    const socket = io();
-
-    // ===== UI =====
-    const elStatus = document.getElementById("status");
-    const setStatus = (t) => elStatus.textContent = t;
-
-    const rolePill = document.getElementById("rolePill");
-    const joinBtn = document.getElementById("joinBtn");
-    const hostBtn = document.getElementById("hostBtn");
-    const voiceBtn = document.getElementById("voiceBtn");
-    const sendVideoBtn = document.getElementById("sendVideoBtn");
-
-    const chatBox = document.getElementById("chatBox");
-    const chatInput = document.getElementById("chatInput");
-    const chatSend = document.getElementById("chatSend");
-
-    let roomId = null;
-    let isHost = false;
-    let hostId = null;
-
-    // ===== YouTube Player =====
-    let player = null;
-    let readyYT = false;
-    let currentVideoId = "";
-
-    function onYouTubeIframeAPIReady() {
-      player = new YT.Player("player", {
-        height: "100%",
-        width: "100%",
-        videoId: "",
-        playerVars: { playsinline: 1 },
-        events: {
-          onReady: () => {
-            readyYT = true;
-            setStatus("✅ Плеер готов. Войди в комнату.");
-          },
-          onStateChange: onPlayerStateChange,
-        }
-      });
-    }
-    window.onYouTubeIframeAPIReady = onYouTubeIframeAPIReady;
-
-    function extractVideoId(url) {
-      if (!url) return null;
-
-      // поддержка разных ссылок
-      // youtu.be/ID
-      // youtube.com/watch?v=ID
-      // youtube.com/embed/ID
-      const m =
-        url.match(/youtu\.be\/([^?&]+)/) ||
-        url.match(/[?&]v=([^?&]+)/) ||
-        url.match(/youtube\.com\/embed\/([^?&]+)/);
-
-      return m ? m[1] : null;
-    }
-
-    // чтобы не зацикливало синхрон
-    let suppress = false;
-
-    function onPlayerStateChange(e) {
-      if (!roomId) return;
-      if (!isHost) return;
-      if (suppress) return;
-
-      // 1 = play, 2 = pause
-      if (e.data === YT.PlayerState.PLAYING) {
-        socket.emit("video-play", { roomId, time: player.getCurrentTime() });
-      } else if (e.data === YT.PlayerState.PAUSED) {
-        socket.emit("video-pause", { roomId, time: player.getCurrentTime() });
-      }
-    }
-
-    // ===== Join / Host =====
-    joinBtn.onclick = () => {
-      const id = document.getElementById("room").value.trim();
-      if (!id) return alert("Введи Room ID");
-      roomId = id;
-
-      socket.emit("join-room", { roomId });
-      setStatus("✅ Joined room: " + roomId);
-    };
-
-    hostBtn.onclick = () => {
-      if (!roomId) return alert("Сначала Join");
-      isHost = true;
-      rolePill.textContent = "Role: host";
-      socket.emit("set-host", { roomId });
-      setStatus("👑 Ты Host. Теперь ты управляешь видео.");
-    };
-
-    // ===== Send Video (только хост) =====
-    sendVideoBtn.onclick = () => {
-      if (!roomId) return alert("Сначала Join");
-      if (!isHost) return alert("Только Host может менять видео");
-      const url = document.getElementById("url").value.trim();
-      const vid = extractVideoId(url);
-      if (!vid) return alert("Не могу вытащить videoId из ссылки");
-
-      currentVideoId = vid;
-      socket.emit("video-load", { roomId, videoId: vid });
-      setStatus("🎬 Видео отправлено в комнату");
-    };
-
-    // ===== Socket events: state =====
-    socket.on("room-state", (st) => {
-      hostId = st.hostId || null;
-
-      // если хост уже есть — оставляем viewer
-      if (hostId && hostId !== socket.id) {
-        // viewer
-      }
-
-      // загрузить видео если есть
-      if (st.videoId && readyYT && player) {
-        currentVideoId = st.videoId;
-        suppress = true;
-        player.loadVideoById(st.videoId);
-        player.seekTo(st.time || 0, true);
-        if (!st.isPlaying) player.pauseVideo();
-        suppress = false;
-      }
-    });
-
-    socket.on("host-changed", ({ hostId: hid }) => {
-      hostId = hid || null;
-      if (!hostId) {
-        setStatus("ℹ️ Сейчас нет Host. Кто-то может нажать 'Я Host'.");
-      } else {
-        setStatus("ℹ️ Host назначен.");
-      }
-    });
-
-    // ===== Socket events: video sync =====
-    socket.on("video-load", ({ videoId }) => {
-      if (!readyYT || !player) return;
-      currentVideoId = videoId || "";
-      suppress = true;
-      player.loadVideoById(videoId);
-      player.pauseVideo();
-      suppress = false;
-      setStatus("🎬 Видео загружено.");
-    });
-
-    socket.on("video-play", ({ time }) => {
-      if (!player) return;
-      suppress = true;
-      player.seekTo(Number(time || 0), true);
-      player.playVideo();
-      suppress = false;
-    });
-
-    socket.on("video-pause", ({ time }) => {
-      if (!player) return;
-      suppress = true;
-      player.seekTo(Number(time || 0), true);
-      player.pauseVideo();
-      suppress = false;
-    });
-
-    socket.on("video-seek", ({ time }) => {
-      if (!player) return;
-      suppress = true;
-      player.seekTo(Number(time || 0), true);
-      suppress = false;
-    });
-
-    // viewer -> отправляет seek, если вдруг кликнул по таймлайну (мы блокируем, но оставим на будущее)
-    // Можно будет позже добавить "попытка перемотки = подсказка".
-
-    // ===== Chat =====
-    function addChatLine(text, isSystem=false) {
-      const div = document.createElement("div");
-      div.className = "msg" + (isSystem ? " sys" : "");
-      div.textContent = text;
-      chatBox.appendChild(div);
-      chatBox.scrollTop = chatBox.scrollHeight;
-    }
-
-    chatSend.onclick = () => {
-      if (!roomId) return alert("Сначала Join");
-      const t = chatInput.value.trim();
-      if (!t) return;
-      chatInput.value = "";
-      socket.emit("chat-message", { roomId, text: t });
-    };
-
-    chatInput.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") chatSend.click();
-    });
-
-    socket.on("chat-message", ({ text }) => addChatLine("💬 " + text));
-    socket.on("system", ({ text }) => addChatLine(text, true));
-
-    // ===== Voice (WebRTC 1-на-1) =====
-    let peer = null;
-    let localStream = null;
-    const remoteAudio = document.getElementById("remoteAudio");
-
-    function makePeer() {
-      if (peer) return peer;
-
-      peer = new RTCPeerConnection({
-        iceServers: [
-          { urls: "stun:stun.l.google.com:19302" },
-          { urls: "stun:stun1.l.google.com:19302" },
-        ],
-      });
-
-      peer.onicecandidate = (e) => {
-        if (e.candidate && roomId) {
-          socket.emit("webrtc-ice", { roomId, candidate: e.candidate });
-        }
-      };
-
-      peer.ontrack = (e) => {
-        remoteAudio.srcObject = e.streams[0];
-        // автоплей иногда блокируется — но после клика по кнопке обычно разрешает
-        remoteAudio.play().catch(()=>{});
-      };
-
-      return peer;
-    }
-
-    async function startVoice() {
-      if (!roomId) { alert("Сначала Join"); return; }
-
-      makePeer();
-
-      // микрофон
-      localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      localStream.getTracks().forEach(track => peer.addTrack(track, localStream));
-
-      // хозяин звонка — тот, кто нажал кнопку первым
-      const offer = await peer.createOffer();
-      await peer.setLocalDescription(offer);
-      socket.emit("webrtc-offer", { roomId, offer });
-    }
-
-    function stopVoice() {
-      if (localStream) {
-        localStream.getTracks().forEach(t => t.stop());
-        localStream = null;
-      }
-      if (peer) {
-        peer.close();
-        peer = null;
-      }
-      remoteAudio.srcObject = null;
-    }
-
-    voiceBtn.onclick = async () => {
-      try {
-        if (!localStream) {
-          await startVoice();
-          voiceBtn.textContent = "🎙 Voice (выкл)";
-          setStatus("🎙 Voice включен. Если не слышно — нажми Voice на втором устройстве тоже.");
-        } else {
-          stopVoice();
-          voiceBtn.textContent = "🎙 Voice (вкл)";
-          setStatus("🎙 Voice выключен.");
-        }
-      } catch (e) {
-        console.error(e);
-        alert("Voice error: " + (e?.message || e));
-      }
-    };
-
-    socket.on("webrtc-offer", async ({ offer }) => {
-      try {
-        if (!roomId) return;
-        makePeer();
-
-        // если юзер ещё не включал микрофон — включим авто (чтобы 2-й мог принять)
-        if (!localStream) {
-          localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          localStream.getTracks().forEach(track => peer.addTrack(track, localStream));
-          voiceBtn.textContent = "🎙 Voice (выкл)";
-        }
-
-        await peer.setRemoteDescription(offer);
-        const answer = await peer.createAnswer();
-        await peer.setLocalDescription(answer);
-        socket.emit("webrtc-answer", { roomId, answer });
-      } catch (e) {
-        console.error("offer err", e);
-      }
-    });
-
-    socket.on("webrtc-answer", async ({ answer }) => {
-      try {
-        if (!peer) return;
-        await peer.setRemoteDescription(answer);
-      } catch (e) {
-        console.error("answer err", e);
-      }
-    });
-
-    socket.on("webrtc-ice", async ({ candidate }) => {
-      try {
-        if (!peer) return;
-        await peer.addIceCandidate(candidate);
-      } catch (e) {
-        console.error("ice err", e);
-      }
-    });
-  </script>
+  <script src="/client.js"></script>
 </body>
 </html>
