@@ -45,7 +45,16 @@ body {
   transform: rotate(90deg) scale(1.05);
   background: #374151;
 }
-    input { padding: 10px; width: 100%; box-sizing: border-box; margin: 6px 0; }
+    input {
+    padding: 10px;
+    width: 100%;
+    box-sizing: border-box;
+    margin: 6px 0;
+    border: none;
+    outline: none;
+    background: #1e1e1e;
+    color: white;
+}
     button { padding: 10px 14px; margin: 6px 6px 6px 0; cursor: pointer; }
     #playerWrap { margin-top: 12px; }
     #status { margin-top: 10px; opacity: .9; white-space: pre-line; }
@@ -114,10 +123,6 @@ button:hover {
   <div id="playerWrap">
     <div id="player"></div>
   </div>
-
-  <p id="status">Статус: не подключено</p>
-<div id="authBlock" style="padding:16px; border:1px solid #333; max-width:420px;">
-  
 
   
 
