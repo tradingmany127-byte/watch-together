@@ -419,27 +419,8 @@ voiceBtn.addEventListener("click", async () => {
 async function startVoice() {
   localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-  peerConnection = new RTCPeerConnection(config);
-  localStream.getTracks().forEach(track => {
-  peerConnection.addTrack(track, localStream);
-});
-peerConnection.ontrack = (e) => {
-  console.log("ONTRACK!", e.streams);
-  const a = document.getElementById("remoteAudio");
-  if (!a) return console.log("remoteAudio not found");
-  a.srcObject = e.streams[0];
-  a.play?.().catch(err => console.log("play err", err));
-};
   
-
-  peerConnection.onicecandidate = (event) => {
-    if (event.candidate) {
-      socket.emit("webrtc-ice", {
-        roomId: currentRoomId,
-        candidate: event.candidate
-      });
-    }
-  };
+ 
 
   const offer = await peerConnection.createOffer();
   await peerConnection.setLocalDescription(offer);
@@ -453,16 +434,13 @@ peerConnection.ontrack = (e) => {
 function stopVoice() {
   if (localStream) {
     localStream.getTracks().forEach(track => track.stop());
-  }
-  if (peerConnection) {
-    peerConnection.close();
+    localStream = null;
   }
 }
-
 // === входящие сигналы ===
 
 socket.on("webrtc-offer", async ({ offer }) => {
-  peerConnection = new RTCPeerConnection(config);
+
 
   peerConnection.onicecandidate = (event) => {
     if (event.candidate) {
