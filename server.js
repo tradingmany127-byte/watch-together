@@ -82,6 +82,22 @@ io.on("connection", (socket) => {
     const state = getRoomState(roomId);
     socket.emit("room-state", state);
   });
+ // ===== WebRTC signaling (voice) =====
+
+// host -> room
+socket.on("webrtc-offer", ({ roomId, offer }) => {
+  socket.to(roomId).emit("webrtc-offer", { offer });
+});
+
+// viewer -> room
+socket.on("webrtc-answer", ({ roomId, answer }) => {
+  socket.to(roomId).emit("webrtc-answer", { answer });
+});
+
+// both -> room
+socket.on("webrtc-ice", ({ roomId, candidate }) => {
+  socket.to(roomId).emit("webrtc-ice", { candidate });
+}); 
 
   // установить видео (по ссылке/ID)
   socket.on("set-video", ({ roomId, videoId }) => {

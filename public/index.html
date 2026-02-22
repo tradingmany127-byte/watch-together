@@ -42,7 +42,7 @@ body {
 }
 
 .gear-btn:hover {
-  transform: rotate(90deg) scale(1.05);
+  tranform: rotate(90deg) scale(1.05);
   background: #374151;
 }
     input {
@@ -111,7 +111,10 @@ button:hover {
       <input id="room" placeholder="Room ID (например 123)" />
       <button id="join">Join</button>
       <button id="host">Я Host</button>
+      <button id="voiceBtn">🎙 Voice (вкл)</button>
+      <div id="roleInfo"></div>
       <div class="hint">Host управляет (play/pause/seek). Viewer только смотрит — так синхрон стабильнее.</div>
+      <p id="status"></p>
     </div>
     <div>
       <input id="url" placeholder="YouTube link / ID" />
@@ -181,6 +184,7 @@ button:hover {
     function setRole(host) {
       isHost = host;
       rolePill.textContent = "роль: " + (isHost ? "host" : "viewer");
+      setStatus(isHost ? "✅ Вы выбрали HOST" : "✅ Вы выбрали JOIN");
     }
 
     function extractVideoId(input) {
