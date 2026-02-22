@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Watch night</title>
+  <style>
+    html, body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: Arial, sans-serif;
+  background: #0f172a;
+  color: white;
+}
+
+body {
+  padding: 16px;
+  max-width: 900px;
+  margin: auto;
+}
+    input { padding: 10px; width: 100%; box-sizing: border-box; margin: 6px 0; }
+    button { padding: 10px 14px; margin: 6px 6px 6px 0; cursor: pointer; }
+    #playerWrap { margin-top: 12px; }
+    #status { margin-top: 10px; opacity: .9; white-space: pre-line; }
+    .row { display: flex; gap: 10px; flex-wrap: wrap; }
+    .row > div { flex: 1; min-width: 260px; }
+    .hint { font-size: 13px; opacity: .7; }
+    .pill {
+  display: inline-block;
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: #3b82f6;
+  color: white;
+  font-weight: 600;
+  margin-left: 10px;
+  box-shadow: 0 0 15px rgba(59, 130, 246, 0.6);
+  transition: 0.3s ease;
+}
+
+.pill:hover {
+  transform: scale(1.05);
+  box-shadow: 0 0 25px rgba(59, 130, 246, 0.9);
+}
+input {
+  background: rgba(255,255,255,0.08);
+  color: white;
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 10px;
+  outline: none;
+}
+
+input::placeholder { color: rgba(255,255,255,0.55); }
+
+button {
+  background: rgba(255,255,255,0.10);
+  color: white;
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 10px;
+}
+
+button:hover {
+  background: rgba(255,255,255,0.16);
+}
+  </style>
+</head>
+<body>
+<div class="container"> 
+  <h2>🎬 🌙 Watch Night <span id="rolePill" class="pill">роль: viewer</span></h2>
+
+  <div class="row">
+    <div>
+      <input id="room" placeholder="Room ID (например 123)" />
+      <button id="join">Join</button>
+      <button id="host">Я Host</button>
+      <div class="hint">Host управляет (play/pause/seek). Viewer только смотрит — так синхрон стабильнее.</div>
+    </div>
+    <div>
+      <input id="url" placeholder="YouTube link / ID" />
+      <button id="send">Send Video</button>
+      <div class="hint">Send Video делает только Host (для стабильности).</div>
+    </div>
+  </div>
+
+  <div id="playerWrap">
+    <div id="player"></div>
+  </div>
+
+  <p id="status">Статус: не подключено</p>
+<div id="authBlock" style="padding:16px; border:1px solid #333; max-width:420px;">
+  <h3>Аккаунт</h3>
+
+  <div id="loggedOut">
+    <a href="/auth/google" style="display:inline-block; padding:10px 14px; border:1px solid #555; text-decoration:none;">
+      Войти через Google
+    </a>
+  </div>
+
+  <div id="loggedIn" style="display:none;">
+    <div style="margin-bottom:10px;">
+      Ты вошёл как: <b id="userName"></b>
+    </div>
+
+    <div style="margin-bottom:10px;">
+      ✅ Добро пожаловать! Подпишись на наш ТГК:
+      <a id="tgLink" href="https://t.me/ТВОЙ_КАНАЛ" target="_blank">t.me/ТВОЙ_КАНАЛ</a>
+    </div>
+
+    <a href="/logout" style="display:inline-block; padding:10px 14px; border:1px solid #555; text-decoration:none;">
+      Выйти
+    </a>
+  </div>
+</div>
+
+<script>
+(async () => {
+  try {
+    const res = await fetch('/me');
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data?.user) return;
+
+    document.getElementById('loggedOut').style.display = 'none';
+    document.getElementById('loggedIn').style.display = 'block';
+    document.getElementById('userName').textContent = data.user.displayName || data.user.email || 'User';
+  } catch (e) {}
+})();
+</script>
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="https://www.youtube.com/iframe_api"></script>
+
+  <script>
+    const socket = io();
+
+    let roomId = null;
+    let player = null;
+
+    // роль
+    let isHost = false;
+    const rolePill = document.getElementById("rolePill");
+
+    // защита от зацикливания
+    let applyingRemote = false;
+
+    // троттлинг
+    let lastSentAt = 0;
+
+    function setStatus(t) {
+      document.getElementById("status").innerText = t;
+    }
+    function setRole(host) {
+      isHost = host;
+      rolePill.textContent = "роль: " + (isHost ? "host" : "viewer");
+    }
+
+    function extractVideoId(input) {
+      if (!input) return null;
+      const url = input.trim();
+      if (/^[a-zA-Z0-9_-]{11}$/.test(url)) return url;
+      const match = url.match(/(?:v=|youtu\.be\/|embed\/)([a-zA-Z0-9_-]{11})/);
+      return match ? match[1] : null;
+    }
+
+    function safeGetTime() {
+      try { return player ? player.getCurrentTime() : 0; } catch(e) { return 0; }
+    }
+    function safeGetVideoId() {
+      try {
+        if (!player) return null;
+        const data = player.getVideoData();
+        return data && data.video_id ? data.video_id : null;
+      } catch(e) { return null; }
+    }
+    function safeIsPlaying() {
+      try {
+        if (!player) return false;
+        const st = player.getPlayerState();
+        return st === YT.PlayerState.PLAYING;
+      } catch(e) { return false; }
+    }
+
+    // ---- YouTube init ----
+    window.onYouTubeIframeAPIReady = function () {
+      player = new YT.Player("player", {
+        height: "390",
+        width: "640",
+        videoId: "",
+        playerVars: { playsinline: 1 },
+        events: {
+          onReady: () => setStatus("✅ Плеер готов.\nПодключись к комнате."),
+          onStateChange: onPlayerStateChange
+        }
+      });
+    };
+
+    function canSend() {
+      // отправлять события может только Host
+      return roomId && player && isHost && !applyingRemote;
+    }
+
+    function emitPlayer(type) {
+      const now = Date.now();
+      if (now - lastSentAt < 250) return; // анти-спам
+      lastSentAt = now;
+
+      socket.emit("player-event", {
+        roomId,
+        type,
+        time: safeGetTime(),
+        isPlaying: safeIsPlaying(),
+        videoId: safeGetVideoId()
+      });
+    }
+
+    // локальные события (только Host)
+    function onPlayerStateChange(event) {
+      if (!canSend()) return;
+
+      if (event.data === YT.PlayerState.PLAYING) emitPlayer("play");
+      if (event.data === YT.PlayerState.PAUSED) emitPlayer("pause");
+    }
+
+    // мягкая синхронизация (только Host шлёт)
+    setInterval(() => {
+      if (!canSend()) return;
+      if (!safeIsPlaying()) return;
+      emitPlayer("sync");
+    }, 2500);
+
+    // детект ручной перемотки (только Host)
+    let lastTime = 0;
+    setInterval(() => {
+      if (!canSend()) { lastTime = safeGetTime(); return; }
+      const t = safeGetTime();
+      const diff = Math.abs(t - lastTime);
+      if (diff > 1.4) {
+        emitPlayer("seek");
+      }
+      lastTime = t;
+    }, 400);
+
+    // ---- UI ----
+    document.getElementById("join").onclick = () => {
+      const rid = document.getElementById("room").value.trim();
+      if (!rid) return alert("Введи Room ID");
+      roomId = rid;
+      socket.emit("join-room", { roomId });
+      setStatus("✅ В комнате: " + roomId + "\nРоль: " + (isHost ? "host" : "viewer"));
+    };
+
+    document.getElementById("host").onclick = () => {
+      setRole(true);
+      setStatus("✅ Ты Host.\nТеперь ты управляешь видео.\n(Если вы оба Host — будет конфликт)");
+    };
+
+    document.getElementById("send").onclick = () => {
+      if (!roomId) return alert("Сначала Join");
+      if (!player) return alert("Плеер ещё не готов");
+      if (!isHost) return alert("Send Video делает только Host (иначе ломается синхрон)");
+
+      const videoId = extractVideoId(document.getElementById("url").value);
+      if (!videoId) return alert("Не смог распознать ссылку/ID");
+
+      socket.emit("set-video", { roomId, videoId });
+      setStatus("📤 Отправил видео: " + videoId);
+    };
+
+    // ---- Server events ----
+    socket.on("room-state", (state) => {
+      if (!state || !player) return;
+
+      applyingRemote = true;
+
+      const { videoId, time, isPlaying } = state;
+      if (videoId) {
+        player.loadVideoById(videoId, time || 0);
+
+        setTimeout(() => {
+          try {
+            if (isPlaying) player.playVideo();
+            else player.pauseVideo();
+          } catch(e) {}
+          applyingRemote = false;
+        }, 650);
+      } else {
+        applyingRemote = false;
+      }
+    });
+
+    socket.on("player-event", (p) => {
+      if (!p || !player) return;
+
+      applyingRemote = true;
+
+      const { type, time, isPlaying, videoId } = p;
+
+      const currentId = safeGetVideoId();
+      if (videoId && videoId !== currentId) {
+        player.loadVideoById(videoId, time || 0);
+        setTimeout(() => {
+          try {
+            if (isPlaying) player.playVideo();
+            else player.pauseVideo();
+          } catch(e) {}
+          applyingRemote = false;
+        }, 650);
+        return;
+      }
+
+      try {
+        if (type === "play") {
+          // play: подравниваем если сильно разъехались
+          const local = safeGetTime();
+          if (typeof time === "number" && Math.abs(local - time) > 1.2) player.seekTo(time, true);
+          player.playVideo();
+        }
+
+        if (type === "pause") {
+          if (typeof time === "number") player.seekTo(time, true);
+          player.pauseVideo();
+        }
+
+        if (type === "seek") {
+          if (typeof time === "number") player.seekTo(time, true);
+        }
+
+        if (type === "sync") {
+          // sync: мягко, только если рассинхрон большой
+          const local = safeGetTime();
+          if (typeof time === "number" && Math.abs(local - time) > 1.6) {
+            player.seekTo(time, true);
+          }
+          if (isPlaying) player.playVideo();
+        }
+      } catch(e) {
+        console.log("player-event error", e);
+      }
+
+      applyingRemote = false;
+    });
+
+    // стартовая роль
+    setRole(false);
+  </script>
+</body>
+</html>
