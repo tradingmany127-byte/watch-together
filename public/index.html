@@ -18,6 +18,33 @@ body {
   max-width: 900px;
   margin: auto;
 }
+
+.gear-btn {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  width: 44px;
+  height: 44px;
+  background: #1f2937;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4px 15px rgba(0,0,0,0.4);
+  transition: 0.3s;
+  z-index: 1000;
+}
+
+.gear-btn a {
+  text-decoration: none;
+  font-size: 20px;
+  color: white;
+}
+
+.gear-btn:hover {
+  transform: rotate(90deg) scale(1.05);
+  background: #374151;
+}
     input { padding: 10px; width: 100%; box-sizing: border-box; margin: 6px 0; }
     button { padding: 10px 14px; margin: 6px 6px 6px 0; cursor: pointer; }
     #playerWrap { margin-top: 12px; }
@@ -64,6 +91,9 @@ button:hover {
   </style>
 </head>
 <body>
+  <div class="gear-btn">
+  <a href="/auth/google">⚙</a>
+</div>
 <div class="container"> 
   <h2>🎬 🌙 Watch Night <span id="rolePill" class="pill">роль: viewer</span></h2>
 
@@ -89,11 +119,7 @@ button:hover {
 <div id="authBlock" style="padding:16px; border:1px solid #333; max-width:420px;">
   <h3>Аккаунт</h3>
 
-  <div id="loggedOut">
-    <a href="/auth/google" style="display:inline-block; padding:10px 14px; border:1px solid #555; text-decoration:none;">
-      Войти через Google
-    </a>
-  </div>
+  
 
   <div id="loggedIn" style="display:none;">
     <div style="margin-bottom:10px;">
@@ -334,7 +360,7 @@ button:hover {
       } catch(e) {
         console.log("player-event error", e);
       }
-
+f
       applyingRemote = false;
     });
 
