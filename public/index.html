@@ -420,7 +420,13 @@ async function startVoice() {
   localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
   peerConnection = new RTCPeerConnection(config);
-
+peerConnection.ontrack = (e) => {
+  console.log("ONTRACK!", e.streams);
+  const a = document.getElementById("remoteAudio");
+  if (!a) return console.log("remoteAudio not found");
+  a.srcObject = e.streams[0];
+  a.play?.().catch(err => console.log("play err", err));
+};
   localStream.getTracks().forEach(track => {
     peerConnection.addTrack(track, localStream);
   });
@@ -487,5 +493,6 @@ socket.on("webrtc-ice", async ({ candidate }) => {
   }
 }); 
   </script>
+  <audio id="remoteAudio" autoplay playsinline controls></audio>
 </body>
 </html>
