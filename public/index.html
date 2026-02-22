@@ -1,151 +1,350 @@
 <!doctype html>
 <html lang="ru">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
-  <title>Watch Night</title>
-
-  <link rel="stylesheet" href="./styles.css" />
-
-  <!-- Socket.io клиент -->
-  <script src="/socket.io/socket.io.js"></script>
-
-  <!-- YouTube IFrame API -->
-  <script src="https://www.youtube.com/iframe_api"></script>
-
-  <!-- Firebase Auth (Email+Google) -->
-  <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/10.12.4/firebase-auth-compat.js"></script>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Room Chat + Voice</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 16px; }
+    .row { display: flex; gap: 16px; flex-wrap: wrap; }
+    .card { border: 1px solid #3333; border-radius: 10px; padding: 12px; min-width: 320px; }
+    input, button { padding: 10px; font-size: 16px; }
+    button { cursor: pointer; }
+    #chat { height: 240px; overflow: auto; border: 1px solid #3333; padding: 10px; border-radius: 10px; background: #fafafa; }
+    .muted { opacity: .7; }
+    .ok { color: green; }
+    .bad { color: crimson; }
+    .small { font-size: 13px; }
+  </style>
 </head>
 <body>
+  <h2>Комната + чат + голос (2 человека)</h2>
 
-  <div class="app">
-    <div class="header">
-      <div class="brand">
-        <span class="moon">🌙</span>
-        <span class="title">Watch Night</span>
+  <div class="row">
+    <div class="card">
+      <h3>Подключение</h3>
+      <div class="small muted">Одинаковый Room ID на двух устройствах.</div>
+      <div style="margin-top:10px;">
+        <input id="name" placeholder="Твоё имя" />
+      </div>
+      <div style="margin-top:10px;">
+        <input id="roomId" placeholder="Room ID (например 123)" />
+      </div>
+      <div style="margin-top:10px; display:flex; gap:10px;">
+        <button id="joinBtn">Join</button>
+        <button id="leaveBtn" disabled>Leave</button>
       </div>
 
-      <div class="header-right">
-        <div class="user-badge" id="authBadge">Не вошёл</div>
-        <button class="icon-btn" id="settingsBtn" title="Настройки">⚙️</button>
+      <div style="margin-top:12px;">
+        <b>Статус:</b> <span id="status" class="muted">не в комнате</span>
+      </div>
+      <div class="small" style="margin-top:8px;">
+        <b>В комнате:</b> <span id="users">—</span>
       </div>
     </div>
 
-    <div class="topbar">
-      <div class="row">
-        <input id="roomId" class="input" placeholder="Room ID (например 123)" />
-        <button id="joinBtn" class="btn primary">Join</button>
-
-        <div class="pill" id="rolePill">Role: viewer</div>
-        <button id="hostBtn" class="btn">Я Host</button>
-
-        <button id="voiceBtn" class="btn">🎙 Voice (вкл)</button>
-        <button id="leaveBtn" class="btn danger">Leave</button>
+    <div class="card">
+      <h3>Голос</h3>
+      <div class="small muted">
+        Нажми Join → после этого включай Voice. На второй вкладке тоже.
       </div>
 
-      <div class="row">
-        <input id="username" class="input" placeholder="Имя пользователя (username)" />
-        <input id="ytLink" class="input grow" placeholder="YouTube link (https://...)" />
-        <button id="sendVideoBtn" class="btn primary">Send Video</button>
+      <div style="margin-top:10px; display:flex; gap:10px;">
+        <button id="voiceBtn" disabled>🎙️ Voice: OFF</button>
+        <button id="hangBtn" disabled>🧨 Hangup</button>
       </div>
 
-      <div class="status" id="statusLine">⏳ Готов. Войди в комнату.</div>
+      <div style="margin-top:10px;">
+        <b>WebRTC:</b> <span id="rtc" class="muted">idle</span>
+      </div>
+
+      <audio id="remoteAudio" autoplay></audio>
+
+      <div class="small muted" style="margin-top:10px;">
+        Если не слышно: проверь, что на второй вкладке тоже нажали Voice и дали доступ к микрофону.
+      </div>
     </div>
 
-    <div class="main">
-      <div class="panel video-panel">
-        <div class="panel-title">Видео</div>
-        <div id="playerWrap" class="player-wrap">
-          <div id="player" class="player"></div>
-        </div>
-
-        <div class="video-controls">
-          <button id="syncNowBtn" class="btn small">⚡ Sync now</button>
-          <button id="copyInviteBtn" class="btn small">🔗 Copy invite</button>
-          <div class="hint">Хост управляет. Вьюверы синхронизируются автоматически.</div>
-        </div>
-      </div>
-
-      <div class="panel chat-panel">
-        <div class="panel-title">Чат</div>
-        <div id="chatBox" class="chat-box"></div>
-
-        <div class="chat-input">
-          <input id="chatInput" class="input grow" placeholder="Напиши сообщение..." />
-          <button id="chatSendBtn" class="btn primary">Send</button>
-        </div>
-
-        <div class="users-box">
-          <div class="users-title">Участники</div>
-          <div id="usersList" class="users-list"></div>
-        </div>
+    <div class="card" style="flex:1;">
+      <h3>Чат</h3>
+      <div id="chat"></div>
+      <div style="margin-top:10px; display:flex; gap:10px;">
+        <input id="msg" placeholder="Сообщение..." style="flex:1;" />
+        <button id="sendBtn" disabled>Send</button>
       </div>
     </div>
   </div>
 
-  <!-- SETTINGS MENU -->
-  <div class="modal-backdrop hidden" id="settingsModal">
-    <div class="modal">
-      <div class="modal-head">
-        <div class="modal-title">Настройки</div>
-        <button class="icon-btn" id="settingsClose">✖</button>
-      </div>
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const socket = io();
 
-      <div class="modal-body">
-        <button class="btn block" id="openRegister">Регистрация</button>
-        <button class="btn block" id="openLogin">Войти</button>
+    const el = (id) => document.getElementById(id);
 
-        <div class="divider"></div>
+    const nameEl = el("name");
+    const roomEl = el("roomId");
+    const joinBtn = el("joinBtn");
+    const leaveBtn = el("leaveBtn");
+    const statusEl = el("status");
+    const usersEl = el("users");
 
-        <div class="menu-item">
-          <div class="menu-title">Мы в соц сетях!</div>
-          <a class="link" href="https://t.me/watchtog" target="_blank" rel="noreferrer">t.me/watchtog</a>
-        </div>
+    const chatEl = el("chat");
+    const msgEl = el("msg");
+    const sendBtn = el("sendBtn");
 
-        <div class="divider"></div>
+    const voiceBtn = el("voiceBtn");
+    const hangBtn = el("hangBtn");
+    const rtcEl = el("rtc");
+    const remoteAudio = el("remoteAudio");
 
-        <!-- 2 фичи от меня -->
-        <button class="btn block" id="toggleThemeBtn">🌗 Тема: переключить</button>
-        <button class="btn block" id="muteAllBtn">🔇 Mute voice</button>
-      </div>
-    </div>
-  </div>
+    let currentRoomId = null;
 
-  <!-- AUTH MODAL -->
-  <div class="modal-backdrop hidden" id="authModal">
-    <div class="modal">
-      <div class="modal-head">
-        <div class="modal-title" id="authTitle">Войти</div>
-        <button class="icon-btn" id="authClose">✖</button>
-      </div>
+    // WebRTC
+    let peerConnection = null;
+    let localStream = null;
+    let voiceOn = false;
+    let isNegotiating = false;
 
-      <div class="modal-body">
-        <div class="banner">
-          <b>Наш Telegram:</b>
-          <a class="link" href="https://t.me/watchtog" target="_blank" rel="noreferrer">t.me/watchtog</a>
-        </div>
+    const rtcConfig = {
+      iceServers: [
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "stun:stun1.l.google.com:19302" }
+      ]
+    };
 
-        <div class="field">
-          <label>Email</label>
-          <input id="authEmail" class="input" placeholder="you@example.com" />
-        </div>
-        <div class="field">
-          <label>Password</label>
-          <input id="authPass" class="input" type="password" placeholder="••••••••" />
-        </div>
+    function logChat(text, cls="") {
+      const div = document.createElement("div");
+      div.className = cls;
+      div.textContent = text;
+      chatEl.appendChild(div);
+      chatEl.scrollTop = chatEl.scrollHeight;
+    }
 
-        <button class="btn primary block" id="authSubmit">Продолжить</button>
-        <button class="btn block" id="googleBtn">Войти через Google</button>
+    function setStatus(text, ok = false) {
+      statusEl.textContent = text;
+      statusEl.className = ok ? "ok" : "muted";
+    }
 
-        <div class="divider"></div>
-        <button class="btn danger block" id="logoutBtn">Выйти из аккаунта</button>
+    function setRTC(text, ok = false) {
+      rtcEl.textContent = text;
+      rtcEl.className = ok ? "ok" : "muted";
+    }
 
-        <div class="small-note" id="authHint"></div>
-      </div>
-    </div>
-  </div>
+    function renderUsers(list) {
+      usersEl.textContent = (list && list.length)
+        ? list.map(u => u.name).join(", ")
+        : "—";
+    }
 
-  <script src="./client.js"></script>
+    function resetRTC() {
+      try {
+        if (localStream) {
+          localStream.getTracks().forEach(t => t.stop());
+        }
+      } catch {}
+      localStream = null;
+
+      if (peerConnection) {
+        try { peerConnection.ontrack = null; } catch {}
+        try { peerConnection.onicecandidate = null; } catch {}
+        try { peerConnection.onconnectionstatechange = null; } catch {}
+        try { peerConnection.close(); } catch {}
+      }
+      peerConnection = null;
+
+      remoteAudio.srcObject = null;
+      voiceOn = false;
+      voiceBtn.textContent = "🎙️ Voice: OFF";
+      setRTC("idle");
+      hangBtn.disabled = true;
+    }
+
+    function ensurePeer() {
+      if (peerConnection) return;
+
+      peerConnection = new RTCPeerConnection(rtcConfig);
+
+      peerConnection.onicecandidate = (event) => {
+        if (event.candidate && currentRoomId) {
+          socket.emit("webrtc-ice", { roomId: currentRoomId, candidate: event.candidate });
+        }
+      };
+
+      peerConnection.ontrack = (event) => {
+        // один аудиопоток
+        remoteAudio.srcObject = event.streams[0];
+        setRTC("remote audio received", true);
+      };
+
+      peerConnection.onconnectionstatechange = () => {
+        const st = peerConnection.connectionState;
+        setRTC("state: " + st, st === "connected");
+      };
+    }
+
+    async function startVoice() {
+      if (!currentRoomId) {
+        alert("Сначала зайди в комнату");
+        return;
+      }
+
+      ensurePeer();
+
+      // получаем микрофон
+      localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+      // добавляем треки (если их ещё нет)
+      const senders = peerConnection.getSenders().map(s => s.track).filter(Boolean);
+      localStream.getTracks().forEach(track => {
+        if (!senders.includes(track)) {
+          peerConnection.addTrack(track, localStream);
+        }
+      });
+
+      // делаем offer и шлём
+      if (isNegotiating) return;
+      isNegotiating = true;
+      try {
+        const offer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offer);
+        socket.emit("webrtc-offer", { roomId: currentRoomId, offer });
+        setRTC("offer sent…");
+      } finally {
+        isNegotiating = false;
+      }
+
+      voiceOn = true;
+      voiceBtn.textContent = "🎙️ Voice: ON";
+      hangBtn.disabled = false;
+    }
+
+    function stopVoice() {
+      // выключаем локальный микрофон и соединение
+      resetRTC();
+    }
+
+    // UI
+    joinBtn.onclick = () => {
+      const name = (nameEl.value || "User").trim();
+      const roomId = (roomEl.value || "").trim();
+
+      if (!roomId) {
+        alert("Введи Room ID");
+        return;
+      }
+
+      socket.emit("join-room", { roomId, name });
+    };
+
+    leaveBtn.onclick = () => {
+      socket.emit("leave-room");
+      currentRoomId = null;
+      setStatus("не в комнате");
+      renderUsers([]);
+      joinBtn.disabled = false;
+      leaveBtn.disabled = true;
+      sendBtn.disabled = true;
+      voiceBtn.disabled = true;
+      stopVoice();
+      logChat("Ты вышел из комнаты.", "muted");
+    };
+
+    sendBtn.onclick = () => {
+      const text = msgEl.value.trim();
+      if (!text) return;
+      socket.emit("chat-message", { text });
+      msgEl.value = "";
+    };
+
+    msgEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") sendBtn.click();
+    });
+
+    voiceBtn.onclick = async () => {
+      try {
+        if (!voiceOn) {
+          await startVoice();
+        } else {
+          stopVoice();
+        }
+      } catch (err) {
+        console.error(err);
+        alert("Voice error: " + (err?.message || err));
+      }
+    };
+
+    hangBtn.onclick = () => stopVoice();
+
+    // Socket events
+    socket.on("room-full", () => {
+      alert("Комната заполнена (макс 2).");
+    });
+
+    socket.on("room-users", (users) => {
+      currentRoomId = roomEl.value.trim();
+      setStatus("в комнате: " + currentRoomId, true);
+      renderUsers(users);
+
+      joinBtn.disabled = true;
+      leaveBtn.disabled = false;
+      sendBtn.disabled = false;
+      voiceBtn.disabled = false;
+
+      logChat("Ты вошёл в комнату: " + currentRoomId, "muted");
+    });
+
+    socket.on("user-joined", ({ name }) => {
+      logChat(name + " вошёл в комнату.", "muted");
+    });
+
+    socket.on("user-left", () => {
+      logChat("Пользователь вышел.", "muted");
+      // можно оставить соединение, но обычно лучше сбросить
+      stopVoice();
+    });
+
+    socket.on("chat-message", (msg) => {
+      const time = new Date(msg.ts).toLocaleTimeString();
+      logChat(`[${time}] ${msg.from}: ${msg.text}`);
+    });
+
+    // WebRTC signaling handlers
+    socket.on("webrtc-offer", async ({ offer }) => {
+      try {
+        ensurePeer();
+
+        // если локально не включали микрофон — всё равно принимаем offer
+        // а потом можно включить voice кнопкой
+        await peerConnection.setRemoteDescription(offer);
+
+        const answer = await peerConnection.createAnswer();
+        await peerConnection.setLocalDescription(answer);
+
+        socket.emit("webrtc-answer", { roomId: currentRoomId, answer });
+        setRTC("answer sent…");
+      } catch (err) {
+        console.error("offer handling error", err);
+      }
+    });
+
+    socket.on("webrtc-answer", async ({ answer }) => {
+      try {
+        if (!peerConnection) return;
+        await peerConnection.setRemoteDescription(answer);
+        setRTC("answer received", true);
+      } catch (err) {
+        console.error("answer handling error", err);
+      }
+    });
+
+    socket.on("webrtc-ice", async ({ candidate }) => {
+      try {
+        if (!peerConnection) return;
+        await peerConnection.addIceCandidate(candidate);
+      } catch (err) {
+        console.error("ice error", err);
+      }
+    });
+  </script>
 </body>
 </html>
