@@ -123,7 +123,7 @@ socket.onAny(() => {
 socket.on("disconnect", () => {
   const cur = (ipConnCount.get(ip) || 1) - 1;
   if (cur <= 0) ipConnCount.delete(ip);
-  else ipConnCount.set(ip, cur);
+  else ipConййnCount.set(ip, cur);
 });
   socket.on("join-room", ({ roomId }) => {
     if (!roomId) return;
