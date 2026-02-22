@@ -58,7 +58,36 @@ const server = http.createServer(app);
 const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] },
 });
+// ===== Anti-spam / rate limit for Socket.IO =====
+const ipConnCount = new Map();
+const ipMsgCount = new Map();
 
+function getIP(socket) {
+  const xf = socket.handshake.headers["x-forwarded-for"];
+  const ip = (xf ? xf.split(",")[0] : socket.handshake.address) || "unknown";
+  return ip.trim();
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, v] of ipMsgCount.entries()) {
+    if (now - v.ts > 10_000) ipMsgCount.delete(ip);
+  }
+}, 10_000);
+
+io.use((socket, next) => {
+  const ip = getIP(socket);
+
+  const c = (ipConnCount.get(ip) || 0) + 1;
+  ipConnCount.set(ip, c);
+
+  if (c > 5) {
+    return next(new Error("Too many connections"));
+  }
+
+  socket.data._ip = ip;
+  next();
+});
 app.use(express.static(path.join(__dirname, "public")));
 
 // Храним состояние комнаты (последнее видео + время + play/pause)
@@ -72,6 +101,30 @@ function getRoomState(roomId) {
 }
 
 io.on("connection", (socket) => {
+  const ip = socket.data._ip || getIP(socket);
+
+socket.onAny(() => {
+  const now = Date.now();
+  const v = ipMsgCount.get(ip) || { count: 0, ts: now };
+
+  if (now - v.ts > 2000) {
+    v.count = 0;
+    v.ts = now;
+  }
+
+  v.count++;
+  ipMsgCount.set(ip, v);
+
+  if (v.count > 40) {
+    socket.disconnect(true);
+  }
+});
+
+socket.on("disconnect", () => {
+  const cur = (ipConnCount.get(ip) || 1) - 1;
+  if (cur <= 0) ipConnCount.delete(ip);
+  else ipConnCount.set(ip, cur);
+});
   socket.on("join-room", ({ roomId }) => {
     if (!roomId) return;
 
