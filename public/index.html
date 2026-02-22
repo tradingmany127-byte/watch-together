@@ -375,6 +375,117 @@ f
 
     // стартовая роль
     setRole(false);
+   // ===== VOICE WEBRTC CLIENT =====
+
+let localStream;
+let peerConnection;
+let isVoiceOn = false;
+let currentRoomId;
+
+const voiceBtn = document.getElementById("voiceBtn");
+
+const config = {
+  iceServers: [
+    { urls: "stun:stun.l.google.com:19302" }
+  ]
+};
+
+// перехватываем join-room чтобы сохранить комнату
+const originalEmit = socket.emit.bind(socket);
+socket.emit = function(event, data) {
+  if (event === "join-room" && data?.roomId) {
+    currentRoomId = data.roomId;
+  }
+  return originalEmit(event, data);
+};
+
+voiceBtn.addEventListener("click", async () => {
+  if (!currentRoomId) {
+    alert("Сначала зайди в комнату");
+    return;
+  }
+
+  if (!isVoiceOn) {
+    await startVoice();
+    voiceBtn.innerText = "🎙 Voice (выкл)";
+    isVoiceOn = true;
+  } else {
+    stopVoice();
+    voiceBtn.innerText = "🎙 Voice (вкл)";
+    isVoiceOn = false;
+  }
+});
+
+async function startVoice() {
+  localStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+  peerConnection = new RTCPeerConnection(config);
+
+  localStream.getTracks().forEach(track => {
+    peerConnection.addTrack(track, localStream);
+  });
+
+  peerConnection.onicecandidate = (event) => {
+    if (event.candidate) {
+      socket.emit("webrtc-ice", {
+        roomId: currentRoomId,
+        candidate: event.candidate
+      });
+    }
+  };
+
+  const offer = await peerConnection.createOffer();
+  await peerConnection.setLocalDescription(offer);
+
+  socket.emit("webrtc-offer", {
+    roomId: currentRoomId,
+    offer
+  });
+}
+
+function stopVoice() {
+  if (localStream) {
+    localStream.getTracks().forEach(track => track.stop());
+  }
+  if (peerConnection) {
+    peerConnection.close();
+  }
+}
+
+// === входящие сигналы ===
+
+socket.on("webrtc-offer", async ({ offer }) => {
+  peerConnection = new RTCPeerConnection(config);
+
+  peerConnection.onicecandidate = (event) => {
+    if (event.candidate) {
+      socket.emit("webrtc-ice", {
+        roomId: currentRoomId,
+        candidate: event.candidate
+      });
+    }
+  };
+
+  await peerConnection.setRemoteDescription(offer);
+
+  const answer = await peerConnection.createAnswer();
+  await peerConnection.setLocalDescription(answer);
+
+  socket.emit("webrtc-answer", {
+    roomId: currentRoomId,
+    answer
+  });
+});
+
+socket.on("webrtc-answer", async ({ answer }) => {
+  await peerConnection.setRemoteDescription(answer);
+});
+
+socket.on("webrtc-ice", async ({ candidate }) => {
+  if (peerConnection) {
+    await peerConnection.addIceCandidate(candidate);
+  }
+}); 
   </script>
 </body>
 </html>
