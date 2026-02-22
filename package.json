@@ -1,8 +1,8 @@
 {
   "name": "watch-together",
   "version": "1.0.0",
-  "main": "server.js",
   "type": "commonjs",
+  "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
