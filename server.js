@@ -5,13 +5,23 @@ const { Server } = require("socket.io");
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: "*" } });
+
+const io = new Server(server, {
+  cors: { origin: "*" }
+});
 
 app.use(express.static(path.join(__dirname, "public")));
 
-// room state in memory
+// Простое хранение состояния комнат в памяти (на бесплатном Render может ресетаться при рестарте — это норм)
 const rooms = new Map();
-// room = { hostSocketId, videoId, playing, time, updatedAt, users: Map(socketId->{username,role}) }
+// rooms.get(roomId) => {
+//   hostSocketId: string|null,
+//   videoId: string|null,
+//   playing: boolean,
+//   time: number,
+//   updatedAt: number,
+//   users: Map(socketId -> { username, role })
+// }
 
 function ensureRoom(roomId) {
   if (!rooms.has(roomId)) {
@@ -27,35 +37,12 @@ function ensureRoom(roomId) {
   return rooms.get(roomId);
 }
 
-function calcNowTime(room) {
-  if (!room) return 0;
-  if (!room.playing) return Number(room.time || 0);
-  const elapsed = (Date.now() - (room.updatedAt || Date.now())) / 1000;
-  return Math.max(0, Number(room.time || 0) + elapsed);
-}
-
-function usersPayload(room) {
+function roomUsersPayload(room) {
   return Array.from(room.users.entries()).map(([id, u]) => ({
     id,
     username: u.username,
     role: u.role
   }));
-}
-
-function snapshot(roomId, room) {
-  return {
-    roomId,
-    hostSocketId: room.hostSocketId,
-    videoId: room.videoId,
-    playing: room.playing,
-    time: calcNowTime(room),
-    updatedAt: Date.now(),
-    users: usersPayload(room)
-  };
-}
-
-function isHost(room, socketId) {
-  return room && room.hostSocketId && room.hostSocketId === socketId;
 }
 
 io.on("connection", (socket) => {
@@ -73,14 +60,34 @@ io.on("connection", (socket) => {
 
       socket.join(roomId);
       room.users.set(socket.id, { username, role });
+
+      // Назначаем host: если нет host — первый кто вошёл как host или просто первый вообще
+      if (!room.hostSocketId) {
+        if (role === "host") room.hostSocketId = socket.id;
+        else room.hostSocketId = socket.id; // чтобы не было “без хоста”
+      } else {
+        // Если кто-то входит как host, но хост уже есть — оставляем текущего
+      }
+
       socket.data.roomId = roomId;
 
-      // assign host if none
-      if (!room.hostSocketId) room.hostSocketId = socket.id;
+      socket.emit("room-state", {
+        roomId,
+        hostSocketId: room.hostSocketId,
+        videoId: room.videoId,
+        playing: room.playing,
+        time: room.time,
+        updatedAt: room.updatedAt,
+        users: roomUsersPayload(room)
+      });
 
-      socket.emit("room-state", snapshot(roomId, room));
-      socket.to(roomId).emit("user-joined", { id: socket.id, username, role });
-      io.to(roomId).emit("users-update", usersPayload(room));
+      socket.to(roomId).emit("user-joined", {
+        id: socket.id,
+        username,
+        role
+      });
+
+      io.to(roomId).emit("users-update", roomUsersPayload(room));
     } catch (e) {
       socket.emit("error-msg", "Ошибка join-room: " + e.message);
     }
@@ -96,22 +103,100 @@ io.on("connection", (socket) => {
     room.users.delete(socket.id);
     socket.leave(roomId);
 
+    // Если ушёл хост — назначим нового
     if (room.hostSocketId === socket.id) {
       const next = room.users.keys().next().value || null;
       room.hostSocketId = next;
       io.to(roomId).emit("host-changed", { hostSocketId: room.hostSocketId });
     }
 
-    io.to(roomId).emit("users-update", usersPayload(room));
+    io.to(roomId).emit("users-update", roomUsersPayload(room));
+
+    // Если никого не осталось — удаляем комнату
     if (room.users.size === 0) rooms.delete(roomId);
 
     socket.data.roomId = null;
   });
 
+  // CHAT
+  socket.on("chat-msg", ({ roomId, username, text }) => {
+    roomId = String(roomId || "").trim();
+    username = String(username || "").trim();
+    text = String(text || "").trim();
+    if (!roomId || !text) return;
+
+    io.to(roomId).emit("chat-msg", {
+      username: username || "anon",
+      text,
+      ts: Date.now()
+    });
+  });
+
+  // YOUTUBE SYNC (принимаем как от хоста, так и от любого — но сервер хранит состояние)
+  socket.on("video-set", ({ roomId, videoId, time }) => {
+    const room = rooms.get(roomId);
+    if (!room) return;
+    room.videoId = videoId || null;
+    room.time = Number(time || 0);
+    room.playing = false;
+    room.updatedAt = Date.now();
+    io.to(roomId).emit("video-set", {
+      videoId: room.videoId,
+      time: room.time,
+      playing: room.playing,
+      updatedAt: room.updatedAt
+    });
+  });
+
+  socket.on("video-play", ({ roomId, time }) => {
+    const room = rooms.get(roomId);
+    if (!room) return;
+    room.playing = true;
+    room.time = Number(time || 0);
+    room.updatedAt = Date.now();
+    io.to(roomId).emit("video-play", {
+      time: room.time,
+      updatedAt: room.updatedAt
+    });
+  });
+
+  socket.on("video-pause", ({ roomId, time }) => {
+    const room = rooms.get(roomId);
+    if (!room) return;
+    room.playing = false;
+    room.time = Number(time || 0);
+    room.updatedAt = Date.now();
+    io.to(roomId).emit("video-pause", {
+      time: room.time,
+      updatedAt: room.updatedAt
+    });
+  });
+
+  socket.on("video-seek", ({ roomId, time }) => {
+    const room = rooms.get(roomId);
+    if (!room) return;
+    room.time = Number(time || 0);
+    room.updatedAt = Date.now();
+    io.to(roomId).emit("video-seek", {
+      time: room.time,
+      updatedAt: room.updatedAt
+    });
+  });
+
+  // WEBRTC SIGNALING (voice)
+  socket.on("webrtc-offer", ({ roomId, to, offer }) => {
+    io.to(to).emit("webrtc-offer", { from: socket.id, offer });
+  });
+  socket.on("webrtc-answer", ({ roomId, to, answer }) => {
+    io.to(to).emit("webrtc-answer", { from: socket.id, answer });
+  });
+  socket.on("webrtc-ice", ({ roomId, to, candidate }) => {
+    io.to(to).emit("webrtc-ice", { from: socket.id, candidate });
+  });
+
   socket.on("disconnect", () => {
     const roomId = socket.data.roomId;
     if (!roomId) return;
-
     const room = rooms.get(roomId);
     if (!room) return;
 
@@ -123,84 +208,8 @@ io.on("connection", (socket) => {
       io.to(roomId).emit("host-changed", { hostSocketId: room.hostSocketId });
     }
 
-    io.to(roomId).emit("users-update", usersPayload(room));
+    io.to(roomId).emit("users-update", roomUsersPayload(room));
     if (room.users.size === 0) rooms.delete(roomId);
-  });
-
-  // chat
-  socket.on("chat-msg", ({ roomId, username, text }) => {
-    roomId = String(roomId || "").trim();
-    username = String(username || "").trim();
-    text = String(text || "").trim();
-    if (!roomId || !text) return;
-
-    io.to(roomId).emit("chat-msg", { username: username || "anon", text, ts: Date.now() });
-  });
-
-  // sync request
-  socket.on("request-sync", ({ roomId }) => {
-    roomId = String(roomId || "").trim();
-    const room = rooms.get(roomId);
-    if (!room) return;
-    socket.emit("room-state", snapshot(roomId, room));
-  });
-
-  // youtube sync: host only
-  socket.on("video-set", ({ roomId, videoId, time }) => {
-    roomId = String(roomId || "").trim();
-    const room = rooms.get(roomId);
-    if (!room) return;
-    if (!isHost(room, socket.id)) return;
-
-    room.videoId = String(videoId || "").trim() || null;
-    room.playing = false;
-    room.time = Number(time || 0);
-    room.updatedAt = Date.now();
-
-    io.to(roomId).emit("video-set", {
-      videoId: room.videoId,
-      time: room.time,
-      playing: room.playing,
-      updatedAt: room.updatedAt
-    });
-  });
-
-  socket.on("video-play", ({ roomId, time }) => {
-    roomId = String(roomId || "").trim();
-    const room = rooms.get(roomId);
-    if (!room) return;
-    if (!isHost(room, socket.id)) return;
-
-    room.playing = true;
-    room.time = Number(time || 0);
-    room.updatedAt = Date.now();
-
-    io.to(roomId).emit("video-play", { time: room.time, updatedAt: room.updatedAt });
-  });
-
-  socket.on("video-pause", ({ roomId, time }) => {
-    roomId = String(roomId || "").trim();
-    const room = rooms.get(roomId);
-    if (!room) return;
-    if (!isHost(room, socket.id)) return;
-
-    room.playing = false;
-    room.time = Number(time || 0);
-    room.updatedAt = Date.now();
-
-    io.to(roomId).emit("video-pause", { time: room.time, updatedAt: room.updatedAt });
-  });
-
-  socket.on("video-seek", ({ roomId, time }) => {
-    roomId = String(roomId || "").trim();
-    const room = rooms.get(roomId);
-    if (!room) return;
-    if (!isHost(room, socket.id)) return;
-
-    room.time = Number(time || 0);
-    room.updatedAt = Date.now();
-
-    io.to(roomId).emit("video-seek", { time: room.time, updatedAt: room.updatedAt });
   });
 });
 
