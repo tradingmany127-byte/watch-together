@@ -1,4 +1,4 @@
-<!doctype html>
+!doctype html>
 <html lang="ru">
 <head>
   <meta charset="utf-8" />
@@ -15,15 +15,26 @@
 </head>
 
 <body>
-  <div class="menu" id="settingsMenu">
-  <div class="menu-hint">Настройки (пока меню-заглушка)</div>
-  <div class="menu-sep"></div>
-  <button class="menu-item" id="copyInviteBtn">Copy invite link</button>
-  <label class="menu-toggle">
-    <input type="checkbox" id="autoSyncToggle" checked />
-    Auto-sync
-  </label>
-</div>
+  <div class="app">
+    <div class="header">
+      <div class="brand">
+        <div class="moon">🌙</div>
+        <div class="title">Watch Night</div>
+      </div>
+
+      <div class="header-right">
+        <button class="icon-btn" id="settingsBtn" title="Настройки">⚙️</button>
+        <div class="menu" id="settingsMenu">
+          <div class="menu-hint">Настройки (пока меню-заглушка)</div>
+          <div class="menu-sep"></div>
+          <button class="menu-item" id="copyInviteBtn">Copy invite link</button>
+          <label class="menu-toggle">
+            <input type="checkbox" id="autoSyncToggle" checked />
+            Auto-sync
+          </label>
+        </div>
+      </div>
+    </div>
 
     <div class="panel top-panel">
       <div class="row">
@@ -73,92 +84,92 @@
   </div>
 
   <script src="/client.js"></script>
-  <!-- Settings overlay + drawer -->
-<div id="settingsOverlay" class="overlay" aria-hidden="true"></div>
+</body>
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Watch Night</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="/socket.io/socket.io.js"></script>
 
-<aside id="settingsDrawer" class="drawer" aria-hidden="true">
-  <div class="drawer__header">
-    <div class="drawer__title">
-      <span class="drawer__moon">🌙</span>
-      <div>
-        <div class="drawer__name">Настройки</div>
-        <div class="drawer__sub">Watch Night</div>
+  <!-- YouTube IFrame API -->
+  <script>
+    function onYouTubeIframeAPIReady() { window.__YT_READY__ = true; }
+  </script>
+  <script src="https://www.youtube.com/iframe_api"></script>
+</head>
+
+<body>
+  <div class="app">
+    <div class="header">
+      <div class="brand">
+        <div class="moon">🌙</div>
+        <div class="title">Watch Night</div>
+      </div>
+
+      <div class="header-right">
+        <button class="icon-btn" id="settingsBtn" title="Настройки">⚙️</button>
+        <div class="menu" id="settingsMenu">
+          <div class="menu-hint">Настройки (пока меню-заглушка)</div>
+          <div class="menu-sep"></div>
+          <button class="menu-item" id="copyInviteBtn">Copy invite link</button>
+          <label class="menu-toggle">
+            <input type="checkbox" id="autoSyncToggle" checked />
+            Auto-sync
+          </label>
+        </div>
       </div>
     </div>
 
-    <button id="settingsClose" class="drawer__close" aria-label="Закрыть" type="button">✕</button>
+    <div class="panel top-panel">
+      <div class="row">
+        <input id="roomId" class="input" placeholder="Room ID (например 123)" />
+        <button id="joinBtn" class="btn btn-primary">Join</button>
+
+        <div class="pill" id="rolePill">Role: viewer</div>
+        <button id="hostBtn" class="btn">Я Host</button>
+        <button id="voiceBtn" class="btn btn-ghost">🎙 Voice (вкл)</button>
+
+        <button id="leaveBtn" class="btn btn-danger" disabled>Leave</button>
+      </div>
+
+      <div class="row">
+        <input id="username" class="input input-wide" placeholder="Имя пользователя" />
+      </div>
+
+      <div class="row">
+        <input id="ytLink" class="input input-wide" placeholder="YouTube link (https://...)" />
+        <button id="sendVideoBtn" class="btn btn-primary">Send Video</button>
+      </div>
+
+      <div class="status" id="statusLine">✅ Плеер готов. Войди в комнату.</div>
+    </div>
+
+    <div class="grid">
+      <div class="panel video-panel">
+        <div class="panel-title">YouTube</div>
+        <div class="video-wrap">
+          <div id="player" class="player"></div>
+          <div class="video-overlay" id="videoOverlay">
+            <div class="overlay-text">Вставь YouTube ссылку и нажми <b>Send Video</b></div>
+          </div>
+        </div>
+        <div class="small-hint">Только Host управляет play/pause/seek — у всех синхрон.</div>
+      </div>
+
+      <div class="panel chat-panel">
+        <div class="panel-title">Чат</div>
+        <div id="chatBox" class="chatBox"></div>
+        <div class="chatRow">
+          <input id="chatInput" class="input input-wide" placeholder="Напиши сообщение..." />
+          <button id="chatSendBtn" class="btn btn-primary">Send</button>
+        </div>
+      </div>
+    </div>
   </div>
 
-  <div class="drawer__content">
-
-    <div class="drawer__section">
-      <div class="drawer__sectionTitle">Аккаунт</div>
-
-      <button class="drawer__item" id="menuAuth" type="button">
-        <span class="drawer__icon">🔐</span>
-        <span class="drawer__text">
-          <span class="drawer__label">Регистрация / Вход</span>
-          <span class="drawer__hint">Войти в аккаунт</span>
-        </span>
-        <span class="drawer__chev">›</span>
-      </button>
-
-      <button class="drawer__item" id="menuProfile" type="button">
-        <span class="drawer__icon">👤</span>
-        <span class="drawer__text">
-          <span class="drawer__label">Профиль</span>
-          <span class="drawer__hint">Имя, аватар, настройки</span>
-        </span>
-        <span class="drawer__chev">›</span>
-      </button>
-
-      <button class="drawer__item" id="menuReferral" type="button">
-        <span class="drawer__icon">🎁</span>
-        <span class="drawer__text">
-          <span class="drawer__label">Реферальная система</span>
-          <span class="drawer__hint">Бонусы за приглашения</span>
-        </span>
-        <span class="drawer__chev">›</span>
-      </button>
-    </div>
-
-    <div class="drawer__section">
-      <div class="drawer__sectionTitle">Фишки</div>
-
-      <button class="drawer__item" id="menuCopyInvite" type="button">
-        <span class="drawer__icon">🔗</span>
-        <span class="drawer__text">
-          <span class="drawer__label">Скопировать invite link</span>
-          <span class="drawer__hint">Ссылка на эту комнату</span>
-        </span>
-        <span class="drawer__chev">›</span>
-      </button>
-
-      <button class="drawer__item" id="menuTheme" type="button">
-        <span class="drawer__icon">🌓</span>
-        <span class="drawer__text">
-          <span class="drawer__label">Тема</span>
-          <span class="drawer__hint">Переключить оформление</span>
-        </span>
-        <span class="drawer__chev">›</span>
-      </button>
-
-      <button class="drawer__item" id="menuHotkeys" type="button">
-        <span class="drawer__icon">⌨️</span>
-        <span class="drawer__text">
-          <span class="drawer__label">Горячие клавиши</span>
-          <span class="drawer__hint">Подсказка по управлению</span>
-        </span>
-        <span class="drawer__chev">›</span>
-      </button>
-    </div>
-
-    <div class="drawer__footer">
-      <div id="drawerToast" class="drawer__toast" aria-live="polite"></div>
-      <div class="drawer__footHint">Esc — закрыть • Клик по фону — закрыть</div>
-    </div>
-
-  </div>
-</aside>
+  <script src="/client.js"></script>
 </body>
 </html>
