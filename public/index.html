@@ -84,5 +84,92 @@
   </div>
 
   <script src="/client.js"></script>
+  <!-- Settings overlay + drawer -->
+<div id="settingsOverlay" class="overlay" aria-hidden="true"></div>
+
+<aside id="settingsDrawer" class="drawer" aria-hidden="true">
+  <div class="drawer__header">
+    <div class="drawer__title">
+      <span class="drawer__moon">🌙</span>
+      <div>
+        <div class="drawer__name">Настройки</div>
+        <div class="drawer__sub">Watch Night</div>
+      </div>
+    </div>
+
+    <button id="settingsClose" class="drawer__close" aria-label="Закрыть" type="button">✕</button>
+  </div>
+
+  <div class="drawer__content">
+
+    <div class="drawer__section">
+      <div class="drawer__sectionTitle">Аккаунт</div>
+
+      <button class="drawer__item" id="menuAuth" type="button">
+        <span class="drawer__icon">🔐</span>
+        <span class="drawer__text">
+          <span class="drawer__label">Регистрация / Вход</span>
+          <span class="drawer__hint">Войти в аккаунт</span>
+        </span>
+        <span class="drawer__chev">›</span>
+      </button>
+
+      <button class="drawer__item" id="menuProfile" type="button">
+        <span class="drawer__icon">👤</span>
+        <span class="drawer__text">
+          <span class="drawer__label">Профиль</span>
+          <span class="drawer__hint">Имя, аватар, настройки</span>
+        </span>
+        <span class="drawer__chev">›</span>
+      </button>
+
+      <button class="drawer__item" id="menuReferral" type="button">
+        <span class="drawer__icon">🎁</span>
+        <span class="drawer__text">
+          <span class="drawer__label">Реферальная система</span>
+          <span class="drawer__hint">Бонусы за приглашения</span>
+        </span>
+        <span class="drawer__chev">›</span>
+      </button>
+    </div>
+
+    <div class="drawer__section">
+      <div class="drawer__sectionTitle">Фишки</div>
+
+      <button class="drawer__item" id="menuCopyInvite" type="button">
+        <span class="drawer__icon">🔗</span>
+        <span class="drawer__text">
+          <span class="drawer__label">Скопировать invite link</span>
+          <span class="drawer__hint">Ссылка на эту комнату</span>
+        </span>
+        <span class="drawer__chev">›</span>
+      </button>
+
+      <button class="drawer__item" id="menuTheme" type="button">
+        <span class="drawer__icon">🌓</span>
+        <span class="drawer__text">
+          <span class="drawer__label">Тема</span>
+          <span class="drawer__hint">Переключить оформление</span>
+        </span>
+        <span class="drawer__chev">›</span>
+      </button>
+
+      <button class="drawer__item" id="menuHotkeys" type="button">
+        <span class="drawer__icon">⌨️</span>
+        <span class="drawer__text">
+          <span class="drawer__label">Горячие клавиши</span>
+          <span class="drawer__hint">Подсказка по управлению</span>
+        </span>
+        <span class="drawer__chev">›</span>
+      </button>
+    </div>
+
+    <div class="drawer__footer">
+      <div id="drawerToast" class="drawer__toast" aria-live="polite"></div>
+      <div class="drawer__footHint">Esc — закрыть • Клик по фону — закрыть</div>
+    </div>
+
+  </div>
+</aside>
 </body>
 </html>

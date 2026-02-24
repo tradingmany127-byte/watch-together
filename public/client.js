@@ -413,3 +413,96 @@ ensurePlayer();
     if (e.key === "Escape" && isOpen()) closeMenu();
   });
 })();
+// ===== Settings Drawer Logic =====
+(function () {
+  const btn = document.getElementById("settingsBtn");       // твоя кнопка ⚙️
+  const overlay = document.getElementById("settingsOverlay");
+  const drawer = document.getElementById("settingsDrawer");
+  const closeBtn = document.getElementById("settingsClose");
+  const toast = document.getElementById("drawerToast");
+
+  if (!btn || !overlay || !drawer || !closeBtn) {
+    console.warn("[SettingsDrawer] Not found: check ids (settingsBtn/settingsOverlay/settingsDrawer/settingsClose)");
+    return;
+  }
+
+  const showToast = (text) => {
+    if (!toast) return;
+    toast.textContent = text;
+    toast.classList.add("show");
+    clearTimeout(showToast._t);
+    showToast._t = setTimeout(() => toast.classList.remove("show"), 1800);
+  };
+
+  const open = () => {
+    overlay.classList.add("open");
+    drawer.classList.add("open");
+    overlay.setAttribute("aria-hidden", "false");
+    drawer.setAttribute("aria-hidden", "false");
+  };
+
+  const close = () => {
+    overlay.classList.remove("open");
+    drawer.classList.remove("open");
+    overlay.setAttribute("aria-hidden", "true");
+    drawer.setAttribute("aria-hidden", "true");
+  };
+
+  btn.addEventListener("click", (e) => {
+    e.preventDefault();
+    open();
+  });
+
+  closeBtn.addEventListener("click", close);
+  overlay.addEventListener("click", close);
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") close();
+  });
+
+  // Menu actions
+  const byId = (id) => document.getElementById(id);
+
+  byId("menuCopyInvite")?.addEventListener("click", async () => {
+    const url = window.location.href;
+    try {
+      await navigator.clipboard.writeText(url);
+      showToast("✅ Ссылка скопирована");
+    } catch {
+      // fallback
+      const ta = document.createElement("textarea");
+      ta.value = url;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+      showToast("✅ Ссылка скопирована");
+    }
+  });
+
+  byId("menuAuth")?.addEventListener("click", () => {
+    showToast("🔐 Тут будет модалка логина/регистрации");
+    // TODO: открыть твоё окно регистрации
+  });
+
+  byId("menuProfile")?.addEventListener("click", () => {
+    showToast("👤 Тут будет профиль пользователя");
+    // TODO: открыть профиль
+  });
+
+  byId("menuReferral")?.addEventListener("click", () => {
+    showToast("🎁 Тут будет реферальная система");
+    // TODO: открыть рефералку
+  });
+
+  // Feature: theme toggle (простая заготовка)
+  byId("menuTheme")?.addEventListener("click", () => {
+    document.body.classList.toggle("theme-alt");
+    showToast("🌓 Тема переключена");
+  });
+
+  // Feature: hotkeys hint
+  byId("menuHotkeys")?.addEventListener("click", () => {
+    alert("Горячие клавиши:\nEsc — закрыть настройки\nEnter — отправка сообщения (если у тебя есть)\n\nМожно добавить больше позже 🙂");
+  });
+})();

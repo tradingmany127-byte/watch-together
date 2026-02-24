@@ -211,3 +211,209 @@ label{ display:block; color: var(--muted); font-size: 13px; margin-bottom: 6px; 
 }
 
 .small-note{ color: var(--muted); font-size: 12px; margin-top: 8px; }
+/* ===== Settings Drawer (Watch Night style) ===== */
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(2px);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 220ms ease;
+  z-index: 9998;
+}
+
+.overlay.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 100vh;
+  width: min(360px, 92vw);
+  transform: translateX(110%);
+  transition: transform 260ms cubic-bezier(.2,.9,.2,1);
+  z-index: 9999;
+
+  /* “glass” card like your UI */
+  background: rgba(16, 40, 58, 0.88);
+  border-left: 1px solid rgba(255, 255, 255, 0.10);
+  box-shadow:
+    -16px 0 40px rgba(0,0,0,0.35),
+    inset 0 1px 0 rgba(255,255,255,0.06);
+  backdrop-filter: blur(10px);
+}
+
+.drawer.open {
+  transform: translateX(0);
+}
+
+.drawer__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 14px 12px;
+  border-bottom: 1px solid rgba(255,255,255,0.10);
+}
+
+.drawer__title {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.drawer__moon {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.10);
+}
+
+.drawer__name {
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  color: rgba(255,255,255,0.95);
+  line-height: 1.1;
+}
+
+.drawer__sub {
+  font-size: 12px;
+  color: rgba(255,255,255,0.65);
+  margin-top: 2px;
+}
+
+.drawer__close {
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.06);
+  color: rgba(255,255,255,0.9);
+  border-radius: 10px;
+  width: 38px;
+  height: 38px;
+  cursor: pointer;
+  transition: transform 120ms ease, background 120ms ease;
+}
+
+.drawer__close:hover {
+  background: rgba(255,255,255,0.10);
+}
+
+.drawer__close:active {
+  transform: scale(0.97);
+}
+
+.drawer__content {
+  padding: 12px 12px 14px;
+  overflow: auto;
+  height: calc(100vh - 64px);
+}
+
+.drawer__section {
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: 14px;
+  background: rgba(255,255,255,0.04);
+  border: 1px solid rgba(255,255,255,0.08);
+}
+
+.drawer__sectionTitle {
+  font-size: 12px;
+  color: rgba(255,255,255,0.65);
+  margin: 2px 6px 10px;
+  letter-spacing: 0.3px;
+}
+
+.drawer__item {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 36px 1fr 18px;
+  align-items: center;
+  gap: 10px;
+
+  padding: 10px 10px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(7, 20, 32, 0.25);
+  border-radius: 12px;
+  cursor: pointer;
+  color: rgba(255,255,255,0.92);
+
+  transition: transform 120ms ease, background 160ms ease, border 160ms ease;
+  margin-bottom: 8px;
+}
+
+.drawer__item:hover {
+  background: rgba(255,255,255,0.06);
+  border-color: rgba(255,255,255,0.14);
+}
+
+.drawer__item:active {
+  transform: scale(0.99);
+}
+
+.drawer__icon {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.10);
+}
+
+.drawer__text {
+  display: flex;
+  flex-direction: column;
+  text-align: left;
+}
+
+.drawer__label {
+  font-weight: 650;
+  font-size: 14px;
+  line-height: 1.15;
+}
+
+.drawer__hint {
+  font-size: 12px;
+  color: rgba(255,255,255,0.62);
+  margin-top: 3px;
+}
+
+.drawer__chev {
+  color: rgba(255,255,255,0.55);
+  font-size: 18px;
+  text-align: right;
+}
+
+.drawer__footer {
+  margin-top: 10px;
+  padding: 10px 6px 0;
+}
+
+.drawer__toast {
+  min-height: 18px;
+  font-size: 12px;
+  color: rgba(255,255,255,0.75);
+  padding: 6px 8px;
+  border-radius: 10px;
+  background: rgba(0,0,0,0.18);
+  border: 1px solid rgba(255,255,255,0.08);
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.drawer__toast.show {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.drawer__footHint {
+  margin-top: 10px;
+  font-size: 11px;
+  color: rgba(255,255,255,0.55);
+}
