@@ -354,8 +354,62 @@ socket.on("chat-msg", (m) => addChatMessage(m));
 
 // voice button placeholder (не ломаем UI)
 $("voiceBtn").addEventListener("click", () => {
-  setStatus("ℹ️ Voice пока кнопка-заглушка. Хоть сейчас подключу полноценный WebRTC Voice.");
+  setStatus("ℹ️ пока не работает");
 });
 
 // init
 ensurePlayer();
+// =======================
+// SETTINGS MENU (⚙️)
+// =======================
+(function initSettingsMenu() {
+  const settingsBtn = document.getElementById("settingsBtn");
+  const settingsMenu = document.getElementById("settingsMenu");
+
+  if (!settingsBtn || !settingsMenu) {
+    console.warn("[settings] settingsBtn/settingsMenu not found");
+    return;
+  }
+
+  // Старт: меню скрыто
+  settingsMenu.classList.remove("open");
+  settingsMenu.style.display = "none";
+
+  function openMenu() {
+    settingsMenu.style.display = "block";
+    // маленькая задержка для анимации (если есть)
+    requestAnimationFrame(() => settingsMenu.classList.add("open"));
+  }
+
+  function closeMenu() {
+    settingsMenu.classList.remove("open");
+    // если нет анимации — можно сразу display none
+    setTimeout(() => (settingsMenu.style.display = "none"), 80);
+  }
+
+  function isOpen() {
+    return settingsMenu.style.display !== "none";
+  }
+
+  settingsBtn.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (isOpen()) closeMenu();
+    else openMenu();
+  });
+
+  // клик по меню — не закрывать
+  settingsMenu.addEventListener("click", (e) => {
+    e.stopPropagation();
+  });
+
+  // клик вне меню — закрыть
+  document.addEventListener("click", () => {
+    if (isOpen()) closeMenu();
+  });
+
+  // Esc — закрыть
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && isOpen()) closeMenu();
+  });
+})();
