@@ -308,3 +308,30 @@ body{
 }
 .nfTitle{ font-weight:950; font-size:18px; }
 .nfText{ color: var(--muted); margin-top:8px; }
+/* ===== MOBILE VIDEO FIX ===== */
+
+#player {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  position: relative;
+}
+
+#player iframe {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* Чтобы карточка не обрезала видео */
+.video-card,
+.card,
+.playerWrap {
+  overflow: visible !important;
+}
+
+/* Мобильная адаптация */
+@media (max-width: 768px) {
+  #player {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+  }
+}

@@ -176,9 +176,16 @@ function ensurePlayer() {
       playerVars: { playsinline: 1, rel: 0, modestbranding: 1 },
       events: {
         onReady: () => {
-          playerReady = true;
-          setStatus("✅ Плеер готов. Войди в комнату.");
-        },
+  playerReady = true;
+  setStatus("✅ Плеер готов. Войди в комнату.");
+  applyIfReady();
+
+  const iframe = player.getIframe();
+  iframe.setAttribute("allowfullscreen", "");
+  iframe.setAttribute("allow", "autoplay; encrypted-media; fullscreen; picture-in-picture");
+  iframe.style.width = "100%";
+  iframe.style.height = "100%";
+},
         onStateChange: (e) => {
           if (!playerReady) return;
           if (!currentRoomId) return;
