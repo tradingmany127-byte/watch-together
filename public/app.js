@@ -114,13 +114,7 @@ function extractYouTubeId(urlOrId) {
 }
 
 // --- YouTube sync ---
-let player = null;
-let playerReady = false;
-let myName = name;
-let isHost = false;
-let suppress = false;
-let lastSeekEmit = 0;
-
+ 
 // server state cache
 let currentVideoId = null;
 

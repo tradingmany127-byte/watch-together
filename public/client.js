@@ -111,7 +111,36 @@ let player = null;
 let playerReady = false;
 let currentVideoId = null;
 let suppressLocalEvents = false;
+// очередь команд до готовности плеера
+let pendingLoad = null;     // { videoId, positionSec, isPlaying }
+let pendingSeek = null;     // number
+let pendingPlay = null;     // number
+let pendingPause = null;    // number
 
+function applyIfReady() {
+  if (!player || !playerReady) return;
+
+  if (pendingLoad) {
+    const { videoId, positionSec, isPlaying } = pendingLoad;
+    player.loadVideoById(videoId, positionSec || 0);
+    if (!isPlaying) player.pauseVideo();
+    pendingLoad = null;
+  }
+  if (pendingSeek != null) {
+    player.seekTo(pendingSeek || 0, true);
+    pendingSeek = null;
+  }
+  if (pendingPlay != null) {
+    player.seekTo(pendingPlay || 0, true);
+    player.playVideo();
+    pendingPlay = null;
+  }
+  if (pendingPause != null) {
+    player.seekTo(pendingPause || 0, true);
+    player.pauseVideo();
+    pendingPause = null;
+  }
+}
 function parseYouTubeId(input) {
   const s = String(input || "").trim();
   if (!s) return "";
@@ -324,10 +353,14 @@ socket.on("host-changed", ({ hostSocketId: newHost }) => {
   setStatus(isIHost ? "✅ Ты теперь Host." : "ℹ️ Хост сменился.");
 });
 
-socket.on("video-set", ({ videoId, time, playing }) => {
-  loadVideo(videoId, Number(time || 0), Boolean(playing));
-  setStatus("✅ Видео синхронизировано.");
-});
+pendingLoad = {
+  videoId,
+  positionSec: Number(time || 0),
+  isPlaying: Boolean(playing)
+};
+
+applyIfReady();
+setStatus("✅ Видео синхронизировано.");
 
 socket.on("video-play", ({ time }) => {
   if (isIHost) return;
