@@ -1,175 +1,120 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="ru">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Watch Night</title>
-  <link rel="stylesheet" href="/styles.css" />
-  <script src="/socket.io/socket.io.js"></script>
-
-  <!-- YouTube IFrame API -->
-  <script>
-    function onYouTubeIframeAPIReady() { window.__YT_READY__ = true; }
-  </script>
-  <script src="https://www.youtube.com/iframe_api"></script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>SyncWatch</title>
+  <link rel="stylesheet" href="/style.css"/>
 </head>
-
-<body>
-  <div class="app">
-    <div class="header">
-      <div class="brand">
-        <div class="moon">🌙</div>
-        <div class="title">Watch Night</div>
-      </div>
-
-      <div class="header-right">
-        <button class="icon-btn" id="settingsBtn" title="Настройки">⚙️</button>
-        <div class="menu" id="settingsMenu">
-          <div class="menu-hint">Настройки (пока меню-заглушка)</div>
-          <div class="menu-sep"></div>
-          <button class="menu-item" id="copyInviteBtn">Copy invite link</button>
-          <label class="menu-toggle">
-            <input type="checkbox" id="autoSyncToggle" checked />
-            Auto-sync
-          </label>
-        </div>
-      </div>
-    </div>
-
-    <div class="panel top-panel">
-      <div class="row">
-        <input id="roomId" class="input" placeholder="Room ID (например 123)" />
-        <button id="joinBtn" class="btn btn-primary">Join</button>
-
-        <div class="pill" id="rolePill">Role: viewer</div>
-        <button id="hostBtn" class="btn">Я Host</button>
-        <button id="voiceBtn" class="btn btn-ghost">🎙 Voice (вкл)</button>
-
-        <button id="leaveBtn" class="btn btn-danger" disabled>Leave</button>
-      </div>
-
-      <div class="row">
-        <input id="username" class="input input-wide" placeholder="Имя пользователя" />
-      </div>
-
-      <div class="row">
-        <input id="ytLink" class="input input-wide" placeholder="YouTube link (https://...)" />
-        <button id="sendVideoBtn" class="btn btn-primary">Send Video</button>
-      </div>
-
-      <div class="status" id="statusLine">✅ Плеер готов. Войди в комнату.</div>
-    </div>
-
-    <div class="grid">
-      <div class="panel video-panel">
-        <div class="panel-title">YouTube</div>
-        <div class="video-wrap">
-          <div id="player" class="player"></div>
-          <div class="video-overlay" id="videoOverlay">
-            <div class="overlay-text">Вставь YouTube ссылку и нажми <b>Send Video</b></div>
-          </div>
-        </div>
-        <div class="small-hint">Только Host управляет play/pause/seek — у всех синхрон.</div>
-      </div>
-
-      <div class="panel chat-panel">
-        <div class="panel-title">Чат</div>
-        <div id="chatBox" class="chatBox"></div>
-        <div class="chatRow">
-          <input id="chatInput" class="input input-wide" placeholder="Напиши сообщение..." />
-          <button id="chatSendBtn" class="btn btn-primary">Send</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <script src="/client.js"></script>
-  <!-- Settings overlay + drawer -->
-<div id="settingsOverlay" class="overlay" aria-hidden="true"></div>
-
-<aside id="settingsDrawer" class="drawer" aria-hidden="true">
-  <div class="drawer__header">
-    <div class="drawer__title">
-      <span class="drawer__moon">🌙</span>
+<body class="bg">
+  <div class="wrap">
+    <div class="brand">
+      <div class="dot"></div>
       <div>
-        <div class="drawer__name">Настройки</div>
-        <div class="drawer__sub">Watch Night</div>
+        <div class="title">SyncWatch</div>
+        <div class="subtitle">Синхронный просмотр YouTube · Dark премиум</div>
       </div>
     </div>
 
-    <button id="settingsClose" class="drawer__close" aria-label="Закрыть" type="button">✕</button>
+    <div class="card center">
+      <div class="label">Имя пользователя (обязательно)</div>
+      <input class="input" id="nameInput" placeholder="Например: Alex" maxlength="24">
+
+      <button class="btn primary" id="createBtn">Создать комнату</button>
+
+      <div class="hr"></div>
+
+      <div class="label">Вход в комнату</div>
+      <div class="row">
+        <input class="input grow" id="roomInput" inputmode="numeric" placeholder="Введите ID комнаты (только цифры)">
+        <button class="btn" id="joinBtn">Войти</button>
+      </div>
+
+      <button class="btn ghost" id="settingsBtn">Настройки</button>
+
+      <div class="hint">ID комнаты — только числа. Без букв и символов.</div>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <div class="modal" id="modal">
+      <div class="modalCard">
+        <div class="modalTop">
+          <div>
+            <div class="modalTitle">Настройки</div>
+            <div class="modalSub">Пока заглушки (функционал позже).</div>
+          </div>
+          <button class="btn ghost" id="closeModal">Закрыть</button>
+        </div>
+
+        <div class="chips">
+          <button class="btn chip">Регистрация</button>
+          <button class="btn chip">Вход</button>
+          <button class="btn chip">Профиль</button>
+          <button class="btn chip">Бонусы</button>
+          <button class="btn chip">Реферальная система</button>
+          <button class="btn chip">Выйти</button>
+        </div>
+      </div>
+    </div>
   </div>
 
-  <div class="drawer__content">
+<script>
+  const toastEl = document.getElementById("toast");
+  function toast(title, text) {
+    toastEl.innerHTML = `<b>${title}</b><div>${text}</div>`;
+    toastEl.classList.add("show");
+    setTimeout(() => toastEl.classList.remove("show"), 2600);
+  }
 
-    <div class="drawer__section">
-      <div class="drawer__sectionTitle">Аккаунт</div>
+  const nameInput = document.getElementById("nameInput");
+  const roomInput = document.getElementById("roomInput");
 
-      <button class="drawer__item" id="menuAuth" type="button">
-        <span class="drawer__icon">🔐</span>
-        <span class="drawer__text">
-          <span class="drawer__label">Регистрация / Вход</span>
-          <span class="drawer__hint">Войти в аккаунт</span>
-        </span>
-        <span class="drawer__chev">›</span>
-      </button>
+  roomInput.addEventListener("input", () => roomInput.value = roomInput.value.replace(/[^\d]/g, ""));
 
-      <button class="drawer__item" id="menuProfile" type="button">
-        <span class="drawer__icon">👤</span>
-        <span class="drawer__text">
-          <span class="drawer__label">Профиль</span>
-          <span class="drawer__hint">Имя, аватар, настройки</span>
-        </span>
-        <span class="drawer__chev">›</span>
-      </button>
+  function getName() {
+    return (nameInput.value || "").trim();
+  }
 
-      <button class="drawer__item" id="menuReferral" type="button">
-        <span class="drawer__icon">🎁</span>
-        <span class="drawer__text">
-          <span class="drawer__label">Реферальная система</span>
-          <span class="drawer__hint">Бонусы за приглашения</span>
-        </span>
-        <span class="drawer__chev">›</span>
-      </button>
-    </div>
+  document.getElementById("createBtn").onclick = async () => {
+    const name = getName();
+    if (!name) {
+      toast("Нужно имя", "Сначала введи имя пользователя (без него нельзя создать комнату).");
+      return;
+    }
+    const r = await fetch("/api/create-room");
+    const j = await r.json();
+    location.href = `/room/${j.roomId}?name=${encodeURIComponent(name)}&asCreator=1`;
+  };
 
-    <div class="drawer__section">
-      <div class="drawer__sectionTitle">Фишки</div>
+  document.getElementById("joinBtn").onclick = async () => {
+    const name = getName();
+    const id = (roomInput.value || "").trim();
 
-      <button class="drawer__item" id="menuCopyInvite" type="button">
-        <span class="drawer__icon">🔗</span>
-        <span class="drawer__text">
-          <span class="drawer__label">Скопировать invite link</span>
-          <span class="drawer__hint">Ссылка на эту комнату</span>
-        </span>
-        <span class="drawer__chev">›</span>
-      </button>
+    if (!name) {
+      toast("Нужно имя", "Сначала введи имя пользователя (без него нельзя войти).");
+      return;
+    }
+    if (!id) {
+      toast("Нужен ID", "Сначала введи числовой ID комнаты и попробуй снова.");
+      return;
+    }
 
-      <button class="drawer__item" id="menuTheme" type="button">
-        <span class="drawer__icon">🌓</span>
-        <span class="drawer__text">
-          <span class="drawer__label">Тема</span>
-          <span class="drawer__hint">Переключить оформление</span>
-        </span>
-        <span class="drawer__chev">›</span>
-      </button>
+    const res = await fetch(`/api/room-exists/${id}`);
+    const data = await res.json();
+    if (!data.exists) {
+      toast("Комната не найдена", `Комнаты #${id} не существует.`);
+      return;
+    }
 
-      <button class="drawer__item" id="menuHotkeys" type="button">
-        <span class="drawer__icon">⌨️</span>
-        <span class="drawer__text">
-          <span class="drawer__label">Горячие клавиши</span>
-          <span class="drawer__hint">Подсказка по управлению</span>
-        </span>
-        <span class="drawer__chev">›</span>
-      </button>
-    </div>
+    location.href = `/room/${id}?name=${encodeURIComponent(name)}`;
+  };
 
-    <div class="drawer__footer">
-      <div id="drawerToast" class="drawer__toast" aria-live="polite"></div>
-      <div class="drawer__footHint">Esc — закрыть • Клик по фону — закрыть</div>
-    </div>
-
-  </div>
-</aside>
+  // Settings modal
+  const modal = document.getElementById("modal");
+  document.getElementById("settingsBtn").onclick = () => modal.classList.add("open");
+  document.getElementById("closeModal").onclick = () => modal.classList.remove("open");
+  modal.addEventListener("mousedown", (e) => { if (e.target === modal) modal.classList.remove("open"); });
+</script>
 </body>
 </html>
