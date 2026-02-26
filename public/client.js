@@ -707,25 +707,7 @@ function onSyncTime(payload) {
 socket.on("sync-time", onSyncTime);
 socket.on("sync-state", onSyncTime);
 
-/* =========================
-   Local seek tracking for host (optional)
-   If you have a custom UI scrubber: emit "video-seek"
-   Here we detect manual seeks by listening time jumps (host only)
-========================= */
-let lastHostTime = 0;
-setInterval(() => {
-  if (!currentRoomId || !isHost || !playerReady || suppressLocalEvents) return;
 
-  const t = safeGetTime();
-  const dt = Math.abs(t - lastHostTime);
-
-  // if jumped a lot quickly -> user probably dragged seek
-  if (dt > 2.0) {
-    socket.emit("video-seek", { time: t });
-  }
-
-  lastHostTime = t;
-}, 800);
 
 /* =========================
    Auto-fill from URL on page load
