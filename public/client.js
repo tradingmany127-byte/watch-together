@@ -1,532 +1,576 @@
 /* public/client.js */
-(() => {
-  // =========================
-  // Helpers / DOM
-  // =========================
-  const $ = (id) => document.getElementById(id);
 
-  // Ожидаемые элементы (если каких-то нет — код не падает)
-  const roomIdEl = $("roomId");
-  const usernameEl = $("username");
-  const joinBtn = $("joinBtn");
-  const leaveBtn = $("leaveBtn");
-  const videoUrlEl = $("videoUrl");
-  const loadBtn = $("loadBtn");
-  const statusEl = $("status");
-  const playerContainer = $("player");
+/* ========= Helpers / DOM ========= */
+const $ = (id) => document.getElementById(id);
 
-  function setStatus(msg) {
-    if (statusEl) statusEl.textContent = msg;
-    console.log("[STATUS]", msg);
-  }
+const roomIdEl = $("roomId");
+const usernameEl = $("username");
+const joinBtn = $("joinBtn");
+const leaveBtn = $("leaveBtn");
 
-  // =========================
-  // Socket
-  // =========================
-  const socket = io();
+const videoUrlEl = $("videoUrl");
+const loadBtn = $("loadBtn");
+const statusEl = $("status");
 
-  let currentRoomId = "";
-  let isHost = false;
+const playerContainer = $("player-container") || $("player") || $("playerContainer") || $("playerWrap");
+const logsEl = $("logs");
+const chatInput = $("chatInput");
+const chatSendBtn = $("chatSendBtn");
+const chatBox = $("chatBox");
+const inviteBtn = $("inviteBtn");
 
-  // =========================
-  // YouTube Player state
-  // =========================
-  let player = null;
-  let playerReady = false;
+/* ========= UI ========= */
+function setStatus(text, isError = false) {
+  if (!statusEl) return;
+  statusEl.textContent = text;
+  statusEl.style.opacity = "1";
+  statusEl.style.color = isError ? "#ff6b6b" : "";
+}
+function logLine(text) {
+  if (!logsEl) return;
+  const t = new Date();
+  const hh = String(t.getHours()).padStart(2, "0");
+  const mm = String(t.getMinutes()).padStart(2, "0");
+  const ss = String(t.getSeconds()).padStart(2, "0");
+  const line = document.createElement("div");
+  line.textContent = `[${hh}:${mm}:${ss}] ${text}`;
+  logsEl.prepend(line);
+}
 
-  let currentVideoId = null;
+/* ========= Socket ========= */
+const socket = io();
 
-  // чтобы не ловить циклы (локальное событие -> emit -> прилетело обратно)
-  let suppressLocal = false;
+let currentRoomId = null;
+let myName = "Guest";
+let isHost = false;
 
-  // очередь команд пока плеер не готов
-  let pending = {
-    load: null,   // { videoId, time, playing }
-    seek: null,   // number
-    play: null,   // number (time)
-    pause: null,  // number (time)
-  };
+/* server truth */
+let serverVideoId = null;
+let serverPlaying = false;
+let serverTime = 0;           // seconds (server-estimated)
+let serverUpdatedAt = 0;      // Date.now ms
 
-  // анти-спам синка
-  const SYNC_THRESHOLD = 1.2;       // если расхождение больше — подгоняем
-  const HARD_SYNC_THRESHOLD = 4.0;  // если очень улетели — жёстко
-  let lastSeekAt = 0;
+function serverNowTime() {
+  if (!serverPlaying) return serverTime || 0;
+  const dt = (Date.now() - (serverUpdatedAt || Date.now())) / 1000;
+  return (serverTime || 0) + dt;
+}
 
-  // =========================
-  // Parse YouTube ID
-  // =========================
-  function parseYouTubeId(input) {
-    const s = String(input || "").trim();
-    if (!s) return "";
+/* ========= YouTube Player ========= */
+let player = null;
+let playerReady = false;
+let suppressLocal = false;
 
-    // если уже id
-    if (/^[a-zA-Z0-9_-]{11}$/.test(s)) return s;
-
-    try {
-      const url = new URL(s);
-
-      // youtu.be/ID
-      if (url.hostname.includes("youtu.be")) {
-        return url.pathname.replace("/", "").slice(0, 11);
-      }
-
-      // youtube.com/watch?v=ID
-      if (url.hostname.includes("youtube.com")) {
-        const v = url.searchParams.get("v");
-        if (v) return v.slice(0, 11);
-
-        // /shorts/ID
-        const parts = url.pathname.split("/").filter(Boolean);
-        const shortsIdx = parts.indexOf("shorts");
-        if (shortsIdx >= 0 && parts[shortsIdx + 1]) return parts[shortsIdx + 1].slice(0, 11);
-
-        // /embed/ID
-        const embedIdx = parts.indexOf("embed");
-        if (embedIdx >= 0 && parts[embedIdx + 1]) return parts[embedIdx + 1].slice(0, 11);
-      }
-    } catch (e) {}
-
-    return "";
-  }
-
-  // =========================
-  // Load YouTube Iframe API safely
-  // =========================
-  function loadYouTubeAPI() {
-    return new Promise((resolve, reject) => {
-      if (!playerContainer) {
-        reject(new Error("Нет элемента #player на странице"));
-        return;
-      }
-
-      // уже загружено
-      if (window.YT && window.YT.Player) {
-        resolve();
-        return;
-      }
-
-      // если уже добавляли скрипт
-      const exists = document.querySelector('script[src="https://www.youtube.com/iframe_api"]');
-      if (exists) {
-        // ждём callback
-        const t0 = Date.now();
-        const timer = setInterval(() => {
-          if (window.YT && window.YT.Player) {
-            clearInterval(timer);
-            resolve();
-          } else if (Date.now() - t0 > 15000) {
-            clearInterval(timer);
-            reject(new Error("YT API не загрузился за 15 сек"));
-          }
-        }, 100);
-        return;
-      }
-
-      // стандартный callback от API
-      const prev = window.onYouTubeIframeAPIReady;
-      window.onYouTubeIframeAPIReady = () => {
-        try { prev && prev(); } catch (e) {}
-        resolve();
-      };
-
+function loadYouTubeAPI() {
+  return new Promise((resolve, reject) => {
+    if (window.YT && window.YT.Player) return resolve();
+    const exists = document.querySelector('script[src*="youtube.com/iframe_api"]');
+    if (!exists) {
       const tag = document.createElement("script");
       tag.src = "https://www.youtube.com/iframe_api";
-      tag.async = true;
-      tag.onerror = () => reject(new Error("Не удалось загрузить https://www.youtube.com/iframe_api"));
       document.head.appendChild(tag);
+    }
+    const t0 = Date.now();
+    const timer = setInterval(() => {
+      if (window.YT && window.YT.Player) {
+        clearInterval(timer);
+        resolve();
+      } else if (Date.now() - t0 > 15000) {
+        clearInterval(timer);
+        reject(new Error("YT API не загрузился за 15 сек"));
+      }
+    }, 50);
+  });
+}
 
-      // страховка на случай если callback не сработает
-      const t0 = Date.now();
-      const timer = setInterval(() => {
-        if (window.YT && window.YT.Player) {
-          clearInterval(timer);
-          resolve();
-        } else if (Date.now() - t0 > 15000) {
-          clearInterval(timer);
-          reject(new Error("YT API не загрузился за 15 сек"));
+async function ensurePlayer() {
+  if (player) return;
+  if (!playerContainer) throw new Error("Нет контейнера для плеера (#player-container)");
+  await loadYouTubeAPI();
+
+  playerReady = false;
+
+  // чистим контейнер
+  playerContainer.innerHTML = "";
+  const div = document.createElement("div");
+  div.id = "yt-player";
+  playerContainer.appendChild(div);
+
+  player = new YT.Player("yt-player", {
+    width: "100%",
+    height: "100%",
+    videoId: serverVideoId || "",
+    playerVars: {
+      autoplay: 0,
+      controls: 1,
+      rel: 0,
+      modestbranding: 1,
+      playsinline: 1, // важно для iOS (иначе может вести себя странно)
+    },
+    events: {
+      onReady: () => {
+        playerReady = true;
+        try {
+          // максимум разрешений для fullscreen на мобиле
+          const iframe = player.getIframe();
+          iframe.setAttribute("allowfullscreen", "1");
+          iframe.setAttribute(
+            "allow",
+            "autoplay; encrypted-media; fullscreen; picture-in-picture"
+          );
+          iframe.style.width = "100%";
+          iframe.style.height = "100%";
+          iframe.style.border = "0";
+        } catch (e) {}
+        setStatus("Плеер готов ✅");
+      },
+      onStateChange: (e) => {
+        // Если мы сейчас применяем команды от сервера — не шлем обратно
+        if (suppressLocal) return;
+        if (!isHost) return; // ВАЖНО: только хост управляет
+
+        // 1 = playing, 2 = paused
+        if (e.data === YT.PlayerState.PLAYING) {
+          socket.emit("video-play", { roomId: currentRoomId, time: safeGetTime() });
+          logLine(`HOST ▶ play @ ${safeGetTime().toFixed(1)}s`);
+        } else if (e.data === YT.PlayerState.PAUSED) {
+          socket.emit("video-pause", { roomId: currentRoomId, time: safeGetTime() });
+          logLine(`HOST ⏸ pause @ ${safeGetTime().toFixed(1)}s`);
         }
-      }, 100);
-    });
-  }
-
-  function ensurePlayer() {
-    if (player || !playerContainer) return;
-
-    loadYouTubeAPI()
-      .then(() => {
-        player = new YT.Player("player", {
-          width: "100%",
-          height: "100%",
-          videoId: "",
-          playerVars: {
-            playsinline: 1,
-            rel: 0,
-            modestbranding: 1
-          },
-          events: {
-            onReady: () => {
-              playerReady = true;
-              setStatus("✅ Плеер готов. Вставь ссылку или войди в комнату.");
-              applyPending();
-              hookPlayerEvents();
-            },
-            onStateChange: (e) => {
-              if (suppressLocal) return;
-              if (!currentRoomId) return;
-
-              // host шлёт события
-              if (!isHost) return;
-
-              // 1 = playing, 2 = paused
-              
-              
-            }
-          }
-        });
-      })
-      .catch((err) => {
-        console.error(err);
-        setStatus("❌ Плеер не загрузился: " + err.message);
-      });
-  }
-
-  function hookPlayerEvents() {
-    // перемотка мышью/ползунком отлавливается плохо (YT не даёт event "seek"),
-    // поэтому делаем лёгкий polling только для HOST, чтобы отследить резкий скачок времени.
-    if (!isHost) return;
-
-    let lastT = safeGetTime();
-    setInterval(() => {
-      if (!playerReady || !player || !currentRoomId || !isHost) return;
-
-      const t = safeGetTime();
-      const dt = Math.abs(t - lastT);
-
-      // если скачок времени большой — это почти точно ручная перемотка
-      if (dt > 1.0) {
-        socket.emit("video-seek", { time: t });
-      }
-      lastT = t;
-    }, 900);
-  }
-
-  // =========================
-  // Player safe wrappers
-  // =========================
-  function safeGetTime() {
-    try {
-      if (!playerReady || !player || !player.getCurrentTime) return 0;
-      const t = player.getCurrentTime();
-      return Number.isFinite(t) ? t : 0;
-    } catch (e) { return 0; }
-  }
-
-  function seekTo(t) {
-    try {
-      if (!playerReady || !player) return;
-      player.seekTo(Number(t) || 0, true);
-    } catch (e) {}
-  }
-
-  function playLocal() {
-    try {
-      if (!playerReady || !player) return;
-
-      // mobile autoplay: если нельзя — просто не рухнет
-      try { player.mute && player.mute(); } catch (e) {}
-
-      const p = player.playVideo();
-      // некоторые браузеры возвращают Promise
-      if (p && typeof p.catch === "function") p.catch(() => {});
-    } catch (e) {}
-  }
-
-  function pauseLocal() {
-    try {
-      if (!playerReady || !player) return;
-      player.pauseVideo();
-    } catch (e) {}
-  }
-
-  function applyPending() {
-    if (!playerReady || !player) return;
-
-    if (pending.load) {
-      const { videoId, time, playing } = pending.load;
-      pending.load = null;
-
-      suppressLocal = true;
-      try {
-        currentVideoId = videoId || null;
-        player.loadVideoById(videoId, Number(time) || 0);
-        if (!playing) player.pauseVideo();
-      } catch (e) {}
-      setTimeout(() => { suppressLocal = false; }, 250);
-    }
-
-    if (pending.seek != null) {
-      suppressLocal = true;
-      seekTo(pending.seek);
-      pending.seek = null;
-      setTimeout(() => { suppressLocal = false; }, 200);
-    }
-
-    if (pending.play != null) {
-      suppressLocal = true;
-      seekTo(pending.play);
-      playLocal();
-      pending.play = null;
-      setTimeout(() => { suppressLocal = false; }, 250);
-    }
-
-    if (pending.pause != null) {
-      suppressLocal = true;
-      seekTo(pending.pause);
-      pauseLocal();
-      pending.pause = null;
-      setTimeout(() => { suppressLocal = false; }, 250);
-    }
-  }
-
-  // =========================
-  // Sync logic (client side)
-  // =========================
-  function maybeSyncToTarget(target, shouldBePlaying) {
-    const cur = safeGetTime();
-    const diff = Math.abs(cur - target);
-
-    // 1) сильно улетели — редкий жёсткий seek
-    if (diff > HARD_SYNC_THRESHOLD) {
-      const now = Date.now();
-      if (now - lastSeekAt > 2500) {
-        lastSeekAt = now;
-        seekTo(target);
-      }
-      return;
-    }
-
-    // 2) средний улёт — тоже редкий seek
-    if (diff > SYNC_THRESHOLD) {
-      const now = Date.now();
-      if (now - lastSeekAt > 2500) {
-        lastSeekAt = now;
-        seekTo(target);
-      }
-      return;
-    }
-
-    // 3) маленький дрейф — ничего не делаем, иначе будет "дёргать"
-    // (в YouTube смена скорости иногда ломает мобилки)
-    if (shouldBePlaying) {
-      // оставляем как есть
-    }
-  }
-
-  // =========================
-  // Emitters (host)
-  // =========================
-  function emitPlay() {
-    if (!currentRoomId || !isHost) return;
-    socket.emit("video-play", { time: safeGetTime() });
-  }
-  function emitPause() {
-    if (!currentRoomId || !isHost) return;
-    socket.emit("video-pause", { time: safeGetTime() });
-  }
-
-  // =========================
-  // UI actions
-  // =========================
-  function joinRoom(roomId, username) {
-    currentRoomId = String(roomId || "").trim();
-    if (!currentRoomId) {
-      setStatus("❌ Введи ID комнаты");
-      return;
-    }
-    socket.emit("join-room", { roomId: currentRoomId, username: username || "User" });
-    setStatus("⏳ Подключение к комнате...");
-  }
-
-  function leaveRoom() {
-    if (!currentRoomId) return;
-    socket.emit("leave-room");
-    currentRoomId = "";
-    isHost = false;
-    setStatus("✅ Ты вышел из комнаты");
-  }
-
-  function loadVideoFromUI() {
-    if (!isHost) {
-      setStatus("⚠️ Только HOST может загружать видео");
-      return;
-    }
-    const raw = videoUrlEl ? videoUrlEl.value : "";
-    const videoId = parseYouTubeId(raw);
-    if (!videoId) {
-      setStatus("❌ Не смог распознать ссылку/ID");
-      return;
-    }
-    currentVideoId = videoId;
-
-    // хост загружает локально и рассылает всем
-    if (!playerReady) {
-      pending.load = { videoId, time: 0, playing: false };
-      ensurePlayer();
-      setStatus("⏳ Ждём плеер...");
-      return;
-    }
-
-    suppressLocal = true;
-    try {
-      player.loadVideoById(videoId, 0);
-      player.pauseVideo();
-    } catch (e) {}
-    setTimeout(() => { suppressLocal = false; }, 300);
-
-    socket.emit("video-load", { videoId, time: 0, playing: false });
-    setStatus("✅ Видео загружено (host).");
-  }
-
-  // =========================
-  // Socket listeners
-  // =========================
-  socket.on("connect", () => {
-    setStatus("✅ Соединение с сервером есть.");
-    ensurePlayer(); // создаём плеер сразу
+      },
+    },
   });
+}
 
-  // сервер должен присылать статус комнаты
-  // ожидаемый payload: { roomId, isHost, videoId, playing, time }
-  socket.on("room-state", (state) => {
-    try {
-      if (!state) return;
-      currentRoomId = state.roomId || currentRoomId;
-      isHost = !!state.isHost;
-
-      // если есть видео — применяем
-      if (state.videoId) {
-        currentVideoId = state.videoId;
-
-        if (!playerReady) {
-          pending.load = {
-            videoId: state.videoId,
-            time: Number(state.time) || 0,
-            playing: !!state.playing
-          };
-          ensurePlayer();
-          setStatus("⏳ Получил state, жду плеер...");
-        } else {
-          pending.load = {
-            videoId: state.videoId,
-            time: Number(state.time) || 0,
-            playing: !!state.playing
-          };
-          applyPending();
-          setStatus("✅ State применён.");
-        }
-      }
-
-    } catch (e) {
-      console.error(e);
-    }
-  });
-
-  socket.on("video-load", ({ videoId, time, playing }) => {
-    if (!videoId) return;
-    if (!playerReady) {
-      pending.load = { videoId, time: Number(time) || 0, playing: !!playing };
-      ensurePlayer();
-      setStatus("⏳ Видео пришло, жду плеер...");
-      return;
-    }
-
-    pending.load = { videoId, time: Number(time) || 0, playing: !!playing };
-    applyPending();
-    setStatus("✅ Видео синхронизировано.");
-  });
-
-  socket.on("video-play", ({ time }) => {
-    if (isHost) return;
-    const target = Number(time) || 0;
-
-    if (!playerReady) {
-      pending.play = target;
-      ensurePlayer();
-      setStatus("⏳ Play пришёл, жду плеер...");
-      return;
-    }
-
-    maybeSyncToTarget(target, true);
-    suppressLocal = true;
-    seekTo(target);
-    playLocal();
-    setTimeout(() => { suppressLocal = false; }, 250);
-  });
-
-  socket.on("video-pause", ({ time }) => {
-    if (isHost) return;
-    const target = Number(time) || 0;
-
-    if (!playerReady) {
-      pending.pause = target;
-      ensurePlayer();
-      setStatus("⏳ Pause пришёл, жду плеер...");
-      return;
-    }
-
-    maybeSyncToTarget(target, false);
-    suppressLocal = true;
-    seekTo(target);
-    pauseLocal();
-    setTimeout(() => { suppressLocal = false; }, 250);
-  });
-
-  socket.on("video-seek", ({ time }) => {
-    if (isHost) return;
-    const target = Number(time) || 0;
-
-    if (!playerReady) {
-      pending.seek = target;
-      ensurePlayer();
-      setStatus("⏳ Seek пришёл, жду плеер...");
-      return;
-    }
-
-    // seek делаем редким, чтобы не дёргало
-    const now = Date.now();
-    if (now - lastSeekAt > 800) {
-      lastSeekAt = now;
-      suppressLocal = true;
-      seekTo(target);
-      setTimeout(() => { suppressLocal = false; }, 200);
-    }
-  });
-
-  // =========================
-  // Bind UI
-  // =========================
-  if (joinBtn) {
-    joinBtn.addEventListener("click", () => {
-      const rid = roomIdEl ? roomIdEl.value : "";
-      const un = usernameEl ? usernameEl.value : "User";
-      joinRoom(rid, un);
-    });
-  }
-  if (leaveBtn) {
-    leaveBtn.addEventListener("click", () => leaveRoom());
-  }
-  if (loadBtn) {
-    loadBtn.addEventListener("click", () => loadVideoFromUI());
-  }
-
-  // Auto-fill room from URL /room/123?name=x&asCreator=1
+function safeGetTime() {
   try {
-    const pathParts = location.pathname.split("/").filter(Boolean);
-    const isRoomPath = pathParts[0] === "room" && pathParts[1];
-    if (isRoomPath && roomIdEl) roomIdEl.value = pathParts[1];
+    if (!playerReady || !player || !player.getCurrentTime) return 0;
+    const t = Number(player.getCurrentTime());
+    return Number.isFinite(t) ? t : 0;
+  } catch {
+    return 0;
+  }
+}
 
-    const q = new URLSearchParams(location.search);
-    if (usernameEl && q.get("name")) usernameEl.value = q.get("name");
+function safeSeekTo(t) {
+  try {
+    if (!playerReady || !player || !player.seekTo) return;
+    player.seekTo(Number(t) || 0, true);
+  } catch (e) {}
+}
+
+function safePlay() {
+  try {
+    if (!playerReady || !player) return;
+    player.playVideo();
+  } catch (e) {}
+}
+
+function safePause() {
+  try {
+    if (!playerReady || !player) return;
+    player.pauseVideo();
+  } catch (e) {}
+}
+
+/* ========= Fullscreen helper ========= */
+function ensureFullscreenButton() {
+  // если уже есть — не дублируем
+  if (document.getElementById("fsBtn")) return;
+
+  const btn = document.createElement("button");
+  btn.id = "fsBtn";
+  btn.textContent = "⛶ Fullscreen";
+  btn.style.cssText =
+    "margin-top:10px;padding:10px 14px;border-radius:12px;border:1px solid rgba(255,255,255,.15);background:rgba(255,255,255,.06);color:#fff;cursor:pointer;";
+  btn.onclick = () => {
+    try {
+      const iframe = player?.getIframe?.();
+      const target = iframe || playerContainer;
+      if (!target) return;
+
+      // стандартный Fullscreen API
+      const req =
+        target.requestFullscreen ||
+        target.webkitRequestFullscreen ||
+        target.mozRequestFullScreen ||
+        target.msRequestFullscreen;
+
+      if (req) req.call(target);
+      else {
+        // fallback: открыть видео в новой вкладке (на iOS часто спасает)
+        const url = player?.getVideoUrl?.();
+        if (url) window.open(url, "_blank");
+      }
+    } catch (e) {}
+  };
+
+  playerContainer?.parentElement?.appendChild(btn);
+}
+
+/* ========= Parse YouTube ID ========= */
+function parseYouTubeId(input) {
+  const s = String(input || "").trim();
+  if (!s) return "";
+
+  // Уже ID?
+  if (/^[a-zA-Z0-9_-]{11}$/.test(s)) return s;
+
+  try {
+    const url = new URL(s);
+    const host = url.hostname.replace("www.", "");
+    if (host === "youtu.be") {
+      const id = url.pathname.replace("/", "");
+      return /^[a-zA-Z0-9_-]{11}$/.test(id) ? id : "";
+    }
+    if (host.includes("youtube.com")) {
+      // watch?v=
+      const v = url.searchParams.get("v");
+      if (v && /^[a-zA-Z0-9_-]{11}$/.test(v)) return v;
+
+      // shorts/
+      const parts = url.pathname.split("/").filter(Boolean);
+      const si = parts.indexOf("shorts");
+      if (si >= 0 && parts[si + 1] && /^[a-zA-Z0-9_-]{11}$/.test(parts[si + 1])) return parts[si + 1];
+
+      // embed/
+      const ei = parts.indexOf("embed");
+      if (ei >= 0 && parts[ei + 1] && /^[a-zA-Z0-9_-]{11}$/.test(parts[ei + 1])) return parts[ei + 1];
+    }
   } catch (e) {}
 
+  return "";
+}
+
+/* ========= Sync (anti-stop) ========= */
+const SOFT_SYNC_THRESHOLD = 0.6;  // маленький дрейф → лечим скоростью
+const SYNC_THRESHOLD = 1.2;       // средний дрейф → редкий seek
+const HARD_SYNC_THRESHOLD = 4.0;  // большой дрейф → seek обязательно
+
+const RATE_ADJUST_MS = 1200;
+let rateResetTimer = null;
+
+function setRateSafe(r) {
+  try {
+    if (!playerReady || !player || !player.setPlaybackRate) return;
+    // YouTube иногда не принимает слишком часто
+    player.setPlaybackRate(r);
+    if (rateResetTimer) clearTimeout(rateResetTimer);
+    rateResetTimer = setTimeout(() => {
+      try { player.setPlaybackRate(1); } catch (e) {}
+    }, RATE_ADJUST_MS);
+  } catch (e) {}
+}
+
+let lastSyncApplyAt = 0;
+
+function applyServerState() {
+  if (!playerReady || !player || !serverVideoId) return;
+
+  // 1) время/состояние с сервера
+  const target = serverNowTime();
+  const cur = safeGetTime();
+  const diff = target - cur;
+  const abs = Math.abs(diff);
+
+  // 2) play/pause приводим к серверу (но без спама)
+  suppressLocal = true;
+  try {
+    if (serverPlaying) safePlay();
+    else safePause();
+  } finally {
+    setTimeout(() => (suppressLocal = false), 0);
+  }
+
+  const now = Date.now();
+
+  // 3) Большой улёт — жёсткий seek (редко)
+  if (abs > HARD_SYNC_THRESHOLD) {
+    if (now - lastSyncApplyAt > 2500) {
+      lastSyncApplyAt = now;
+      suppressLocal = true;
+      try { safeSeekTo(target); } finally { setTimeout(() => (suppressLocal = false), 0); }
+    }
+    return;
+  }
+
+  // 4) Средний улёт — seek (редко)
+  if (abs > SYNC_THRESHOLD) {
+    if (now - lastSyncApplyAt > 2500) {
+      lastSyncApplyAt = now;
+      suppressLocal = true;
+      try { safeSeekTo(target); } finally { setTimeout(() => (suppressLocal = false), 0); }
+    }
+    return;
+  }
+
+  // 5) Малый дрейф — подгон скоростью
+  if (abs > SOFT_SYNC_THRESHOLD) {
+    setRateSafe(diff > 0 ? 1.05 : 0.95);
+  } else {
+    setRateSafe(1);
+  }
+}
+
+/* ========= Host-only: detect manual seeks & send sync ========= */
+let hostLastT = 0;
+let hostTicker = null;
+
+function startHostTicker() {
+  stopHostTicker();
+  hostLastT = safeGetTime();
+
+  hostTicker = setInterval(() => {
+    if (!isHost || !currentRoomId || !playerReady || !player) return;
+
+    const t = safeGetTime();
+    const dt = Math.abs(t - hostLastT);
+
+    // если прыжок времени > 1 сек — это ручной seek
+    if (dt > 1.0) {
+      socket.emit("video-seek", { roomId: currentRoomId, time: t });
+      logLine(`HOST ⏩ seek @ ${t.toFixed(1)}s`);
+    }
+
+    // периодический sync-time (как “маяк”)
+    socket.emit("sync-time", {
+      roomId: currentRoomId,
+      time: t,
+      playing: (player.getPlayerState && player.getPlayerState() === YT.PlayerState.PLAYING) || false,
+    });
+
+    hostLastT = t;
+  }, 900);
+}
+
+function stopHostTicker() {
+  if (hostTicker) clearInterval(hostTicker);
+  hostTicker = null;
+}
+
+/* ========= Socket handlers ========= */
+socket.on("connect", () => {
+  setStatus("Socket подключён ✅");
+});
+
+socket.on("disconnect", () => {
+  setStatus("Socket отключён ❌", true);
+  isHost = false;
+  stopHostTicker();
+});
+
+socket.on("not-host", (p) => {
+  logLine(`⛔ Не HOST: действие "${p?.action || "unknown"}" запрещено`);
+});
+
+socket.on("host-changed", (p = {}) => {
+  isHost = (p.hostSocketId === socket.id);
+  setStatus(isHost ? "Ты HOST ✅" : "Ты viewer");
+  logLine(isHost ? "Ты стал HOST" : "HOST сменился");
+  if (isHost) startHostTicker();
+  else stopHostTicker();
+});
+
+// Универсально: если сервер шлёт состояние комнаты
+socket.on("room-state", async (state = {}) => {
+  if (!state) return;
+
+  currentRoomId = String(state.roomId || currentRoomId || "");
+  serverVideoId = state.videoId || serverVideoId || null;
+  serverPlaying = !!state.playing;
+  serverTime = Number(state.time || 0) || 0;
+  serverUpdatedAt = Date.now();
+
+  // hostSocketId → isHost
+  if (state.hostSocketId) {
+    isHost = (state.hostSocketId === socket.id);
+    if (isHost) startHostTicker();
+    else stopHostTicker();
+  }
+
+  if (serverVideoId) {
+    await ensurePlayer();
+    ensureFullscreenButton();
+
+    // если у плеера другой ролик — загрузим его (без autoplay)
+    try {
+      const curId = player.getVideoData?.()?.video_id;
+      if (curId !== serverVideoId) {
+        suppressLocal = true;
+        try {
+          player.cueVideoById(serverVideoId);
+        } finally {
+          setTimeout(() => (suppressLocal = false), 0);
+        }
+      }
+    } catch (e) {}
+
+    // применяем синхронизацию
+    applyServerState();
+  }
+});
+
+// Backward compatible: старые эвенты
+socket.on("video-load", async (p = {}) => {
+  serverVideoId = p.videoId || serverVideoId;
+  serverPlaying = !!p.playing;
+  serverTime = Number(p.time || 0) || 0;
+  serverUpdatedAt = Date.now();
+
+  await ensurePlayer();
+  ensureFullscreenButton();
+
+  suppressLocal = true;
+  try {
+    player.cueVideoById(serverVideoId);
+    safeSeekTo(serverTime);
+    serverPlaying ? safePlay() : safePause();
+  } finally {
+    setTimeout(() => (suppressLocal = false), 0);
+  }
+  logLine(`📺 Load: ${serverVideoId}`);
+});
+
+socket.on("video-play", (p = {}) => {
+  serverPlaying = true;
+  serverTime = Number(p.time || serverNowTime()) || 0;
+  serverUpdatedAt = Date.now();
+  suppressLocal = true;
+  try { safePlay(); } finally { setTimeout(() => (suppressLocal = false), 0); }
+});
+
+socket.on("video-pause", (p = {}) => {
+  serverPlaying = false;
+  serverTime = Number(p.time || safeGetTime()) || 0;
+  serverUpdatedAt = Date.now();
+  suppressLocal = true;
+  try { safePause(); } finally { setTimeout(() => (suppressLocal = false), 0); }
+});
+
+socket.on("video-seek", (p = {}) => {
+  serverTime = Number(p.time || 0) || 0;
+  serverUpdatedAt = Date.now();
+  suppressLocal = true;
+  try { safeSeekTo(serverTime); } finally { setTimeout(() => (suppressLocal = false), 0); }
+});
+
+socket.on("sync-time", (p = {}) => {
+  // сервер/хост маяк — обновим истину
+  if (typeof p.time === "number") serverTime = p.time;
+  if (typeof p.playing === "boolean") serverPlaying = p.playing;
+  serverUpdatedAt = Date.now();
+});
+
+/* ========= Periodic apply sync for viewers ========= */
+setInterval(() => {
+  if (!currentRoomId) return;
+  if (!playerReady || !player) return;
+  if (!serverVideoId) return;
+  // host сам “истина” и сам шлёт маяк — но тоже можно слегка подправлять
+  applyServerState();
+}, 1000);
+
+/* ========= UI actions ========= */
+async function joinRoom() {
+  const rid = String(roomIdEl?.value || "").trim();
+  if (!/^[0-9]{1,12}$/.test(rid)) {
+    setStatus("RoomID только цифры (1-12)", true);
+    return;
+  }
+  myName = String(usernameEl?.value || "Guest").trim() || "Guest";
+  currentRoomId = rid;
+
+  socket.emit("join-room", { roomId: rid, username: myName });
+  setStatus(`В комнате ${rid}...`);
+  logLine(`➡️ join ${rid} as ${myName}`);
+
+  // попросим состояние (если сервер поддерживает)
+  socket.emit("get-state", { roomId: rid });
+}
+
+function leaveRoom() {
+  if (!currentRoomId) return;
+  socket.emit("leave-room", { roomId: currentRoomId });
+  logLine(`⬅️ leave ${currentRoomId}`);
+  currentRoomId = null;
+  isHost = false;
+  stopHostTicker();
+  setStatus("Вышел из комнаты");
+}
+
+async function loadVideo() {
+  if (!currentRoomId) return setStatus("Сначала join room", true);
+  if (!isHost) return setStatus("Только HOST может загружать видео", true);
+
+  const id = parseYouTubeId(videoUrlEl?.value);
+  if (!id) return setStatus("Неверная ссылка/ID YouTube", true);
+
+  serverVideoId = id;
+  serverPlaying = false;
+  serverTime = 0;
+  serverUpdatedAt = Date.now();
+
+  await ensurePlayer();
+  ensureFullscreenButton();
+
+  suppressLocal = true;
+  try {
+    player.cueVideoById(id);
+    safeSeekTo(0);
+    safePause();
+  } finally {
+    setTimeout(() => (suppressLocal = false), 0);
+  }
+
+  socket.emit("video-load", { roomId: currentRoomId, videoId: id, time: 0, playing: false });
+  logLine(`HOST 📺 load ${id}`);
+  setStatus("Видео загружено (HOST)");
+}
+
+function inviteLink() {
+  try {
+    if (!currentRoomId) return;
+    const url = new URL(window.location.href);
+    // если у тебя room в URL /room/123 — оставляем как есть
+    // но добавим query для удобства
+    url.searchParams.set("room", currentRoomId);
+    navigator.clipboard?.writeText(url.toString());
+    logLine("🔗 Ссылка приглашения скопирована");
+  } catch (e) {
+    logLine("Не удалось скопировать ссылку");
+  }
+}
+
+/* ========= Chat ========= */
+function sendChat() {
+  const msg = String(chatInput?.value || "").trim();
+  if (!msg || !currentRoomId) return;
+  socket.emit("chat-msg", { roomId: currentRoomId, msg, username: myName });
+  chatInput.value = "";
+}
+socket.on("chat-msg", (p = {}) => {
+  const line = document.createElement("div");
+  line.textContent = `${p.username || "?"}: ${p.msg || ""}`;
+  chatBox?.appendChild(line);
+  chatBox?.scrollTo?.(0, chatBox.scrollHeight);
+});
+
+/* ========= Bind ========= */
+joinBtn?.addEventListener("click", joinRoom);
+leaveBtn?.addEventListener("click", leaveRoom);
+loadBtn?.addEventListener("click", loadVideo);
+inviteBtn?.addEventListener("click", inviteLink);
+
+chatSendBtn?.addEventListener("click", sendChat);
+chatInput?.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") sendChat();
+});
+
+/* ========= Auto-join from URL (?room=) ========= */
+(function autoJoinFromURL() {
+  try {
+    const u = new URL(window.location.href);
+    const r = u.searchParams.get("room");
+    if (r && roomIdEl) roomIdEl.value = r;
+  } catch {}
 })();
