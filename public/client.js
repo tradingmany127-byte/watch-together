@@ -116,7 +116,15 @@ let pendingLoad = null;     // { videoId, positionSec, isPlaying }
 let pendingSeek = null;     // number
 let pendingPlay = null;     // number
 let pendingPause = null;    // number
-
+const SYNC_THRESHOLD = 1.2;       // меньше — не трогаем
+const HARD_SYNC_THRESHOLD = 4.0;  // сильно улетели — жестко синкаем
+const EMIT_INTERVAL_MS = 1200;    // хост шлет таймкод
+const SOFT_SYNC_THRESHOLD = 0.8;
+const RATE_ADJUST_MS = 1500;
+let rateResetTimer = null;
+let lastSyncApplyAt = 0;
+let lastSyncApplyAt = 0;
+function applyIfReady() {
   if (!player || !playerReady) return;
 
   if (pendingLoad) {
