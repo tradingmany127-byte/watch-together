@@ -1,399 +1,741 @@
+/* public/client.js */
+"use strict";
+
+/* =========================
+   Small helpers
+========================= */
 const $ = (id) => document.getElementById(id);
 
+function setStatus(msg) {
+  const el = $("status");
+  if (el) el.textContent = msg;
+  console.log("[STATUS]", msg);
+}
+
+function appendChatLine(text) {
+  const box = $("chatMessages");
+  if (!box) return;
+  const div = document.createElement("div");
+  div.className = "msg";
+  div.textContent = text;
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+}
+
+function clamp(n, a, b) {
+  n = Number(n) || 0;
+  return Math.max(a, Math.min(b, n));
+}
+
+/* =========================
+   Socket.io
+========================= */
+const socket = io();
+
+socket.on("connect", () => {
+  console.log("SOCKET CONNECTED", socket.id);
+});
+
+socket.on("connect_error", (e) => {
+  console.error("SOCKET CONNECT ERROR:", e?.message || e);
+  setStatus("❌ Ошибка соединения (socket).");
+});
+
+/* =========================
+   DOM (IDs must exist in HTML)
+   If your HTML uses other IDs — rename here.
+========================= */
+const joinBtn = $("joinBtn");
+const leaveBtn = $("leaveBtn");
 const roomIdEl = $("roomId");
 const usernameEl = $("username");
-const joinBtn = $("joinBtn");
-const hostBtn = $("hostBtn");
-const rolePill = $("rolePill");
-const leaveBtn = $("leaveBtn");
 
-const ytLinkEl = $("ytLink");
-const sendVideoBtn = $("sendVideoBtn");
-const statusLine = $("statusLine");
-const videoOverlay = $("videoOverlay");
+const videoUrlEl = $("videoUrl");
+const loadBtn = $("loadBtn");
 
-const chatBox = $("chatBox");
 const chatInput = $("chatInput");
 const chatSendBtn = $("chatSendBtn");
 
-const settingsBtn = $("settingsBtn");
-const settingsMenu = $("settingsMenu");
-const copyInviteBtn = $("copyInviteBtn");
-const autoSyncToggle = $("autoSyncToggle");
+const inviteBtn = $("inviteBtn");
 
-const socket = io();
-
+/* =========================
+   State
+========================= */
 let currentRoomId = "";
-let myUsername = "";
-let myRole = "viewer";
+let isHost = false;
 let hostSocketId = null;
-let isIHost = false;
 
-// ============================
-// Settings menu
-// ============================
-settingsBtn.addEventListener("click", () => {
-  settingsMenu.classList.toggle("open");
-});
-document.addEventListener("click", (e) => {
-  if (!settingsMenu.contains(e.target) && e.target !== settingsBtn) {
-    settingsMenu.classList.remove("open");
-  }
-});
-copyInviteBtn.addEventListener("click", async () => {
-  settingsMenu.classList.remove("open");
-  if (!currentRoomId) return setStatus("❌ Сначала войди в комнату.");
-  const url = new URL(window.location.href);
-  url.searchParams.set("room", currentRoomId);
-  try {
-    await navigator.clipboard.writeText(url.toString());
-    setStatus("✅ Invite link скопирован.");
-  } catch {
-    setStatus("❌ Не удалось скопировать (разрешения браузера).");
-  }
-});
-
-// Auto-fill room from URL
-(() => {
-  const url = new URL(window.location.href);
-  const r = url.searchParams.get("room");
-  if (r) roomIdEl.value = r;
-})();
-
-function setStatus(text) {
-  statusLine.textContent = text;
-}
-
-// ============================
-// Role / Join / Leave
-// ============================
-function setRole(role) {
-  myRole = role;
-  rolePill.textContent = `Role: ${role}`;
-}
-
-hostBtn.addEventListener("click", () => {
-  setRole("host");
-  setStatus("✅ Ты выбрал Host. Теперь Join.");
-});
-
-joinBtn.addEventListener("click", () => {
-  const roomId = String(roomIdEl.value || "").trim();
-  const username = String(usernameEl.value || "").trim();
-  if (!roomId) return setStatus("❌ Room ID пустой.");
-  if (!username) return setStatus("❌ Введи имя пользователя.");
-
-  currentRoomId = roomId;
-  myUsername = username;
-
-  socket.emit("join-room", { roomId, username, role: myRole });
-  setStatus("⏳ Подключение к комнате...");
-});
-
-leaveBtn.addEventListener("click", () => {
-  socket.emit("leave-room");
-  currentRoomId = "";
-  hostSocketId = null;
-  isIHost = false;
-
-  leaveBtn.disabled = true;
-  joinBtn.disabled = false;
-  roomIdEl.disabled = false;
-  usernameEl.disabled = false;
-
-  setStatus("✅ Ты вышел из комнаты.");
-});
-
-// ============================
-// YouTube Player
-// ============================
 let player = null;
 let playerReady = false;
 let currentVideoId = null;
-let suppressLocalEvents = false;
-// очередь команд до готовности плеера
-let pendingLoad = null;     // { videoId, positionSec, isPlaying }
-let pendingSeek = null;     // number
-let pendingPlay = null;     // number
-let pendingPause = null;    // number
 
+// protect from loops (stateChange -> emit -> receive -> stateChange)
+let suppressLocalEvents = false;
+
+// pending commands before player ready
+let pendingLoad = null;  // { videoId, positionSec, isPlaying }
+let pendingSeek = null;  // number
+let pendingPlay = null;  // number
+let pendingPause = null; // number
+
+/* =========================
+   Sync tuning (anti-stops)
+========================= */
+const SOFT_SYNC_THRESHOLD = 0.8; // small drift -> playback rate
+const SYNC_THRESHOLD = 1.2;      // medium drift -> rare seek
+const HARD_SYNC_THRESHOLD = 4.0; // big drift -> hard seek
+
+const SEEK_COOLDOWN_MS = 2500;   // anti-spam for seek
+let lastSyncApplyAt = 0;
+
+const RATE_ADJUST_MS = 1500;     // how long to keep adjusted speed
+let rateResetTimer = null;
+
+// Host sends timecode regularly
+const HOST_SYNC_INTERVAL_MS = 1200;
+let hostSyncTimer = null;
+
+/* =========================
+   YouTube utils
+========================= */
+function safeGetTime() {
+  try {
+    if (!player || !player.getCurrentTime) return 0;
+    const t = player.getCurrentTime();
+    return Number.isFinite(t) ? t : 0;
+  } catch {
+    return 0;
+  }
+}
+
+function seekTo(targetSec) {
+  try {
+    if (!player || !player.seekTo) return;
+    player.seekTo(Math.max(0, Number(targetSec) || 0), true);
+  } catch (e) {
+    console.warn("seekTo error:", e);
+  }
+}
+
+function play() {
+  try {
+    if (!player || !player.playVideo) return;
+    player.playVideo();
+  } catch (e) {
+    console.warn("play error:", e);
+  }
+}
+
+function pause() {
+  try {
+    if (!player || !player.pauseVideo) return;
+    player.pauseVideo();
+  } catch (e) {
+    console.warn("pause error:", e);
+  }
+}
+
+function setRateSafe(rate) {
+  try {
+    if (!player || !player.setPlaybackRate) return;
+    if (!playerReady) return;
+
+    player.setPlaybackRate(rate);
+
+    if (rateResetTimer) clearTimeout(rateResetTimer);
+    rateResetTimer = setTimeout(() => {
+      try {
+        if (player && player.setPlaybackRate) player.setPlaybackRate(1);
+      } catch {}
+    }, RATE_ADJUST_MS);
+  } catch {}
+}
+
+// Soft-sync function: seeks rarely, uses speed for tiny drift
+function maybeSyncToTarget(target) {
+  const cur = safeGetTime();
+  const diff = (Number(target) || 0) - cur; // signed
+  const abs = Math.abs(diff);
+
+  // Big drift -> rare hard seek
+  if (abs > HARD_SYNC_THRESHOLD) {
+    const now = Date.now();
+    if (now - lastSyncApplyAt > SEEK_COOLDOWN_MS) {
+      lastSyncApplyAt = now;
+      setRateSafe(1);
+      seekTo(target);
+    }
+    return;
+  }
+
+  // Medium drift -> rare seek
+  if (abs > SYNC_THRESHOLD) {
+    const now = Date.now();
+    if (now - lastSyncApplyAt > SEEK_COOLDOWN_MS) {
+      lastSyncApplyAt = now;
+      setRateSafe(1);
+      seekTo(target);
+    }
+    return;
+  }
+
+  // Small drift -> speed adjust, NO seek
+  if (abs > SOFT_SYNC_THRESHOLD) {
+    setRateSafe(diff > 0 ? 1.05 : 0.95);
+  } else {
+    setRateSafe(1);
+  }
+}
+
+/* =========================
+   Pending apply
+========================= */
+function applyIfReady() {
   if (!player || !playerReady) return;
 
   if (pendingLoad) {
     const { videoId, positionSec, isPlaying } = pendingLoad;
-    player.loadVideoById(videoId, positionSec || 0);
-    if (!isPlaying) player.pauseVideo();
-    pendingLoad = null;
+    try {
+      suppressLocalEvents = true;
+      player.loadVideoById(videoId, positionSec || 0);
+      if (!isPlaying) player.pauseVideo();
+      currentVideoId = videoId;
+    } catch (e) {
+      console.warn("pendingLoad error:", e);
+    } finally {
+      suppressLocalEvents = false;
+      pendingLoad = null;
+    }
   }
-  if (pendingSeek != null) {
-    player.seekTo(pendingSeek || 0, true);
+
+  if (pendingSeek !== null) {
+    suppressLocalEvents = true;
+    seekTo(pendingSeek);
+    suppressLocalEvents = false;
     pendingSeek = null;
   }
-  if (pendingPlay != null) {
-    player.seekTo(pendingPlay || 0, true);
-    player.playVideo();
+
+  if (pendingPlay !== null) {
+    suppressLocalEvents = true;
+    maybeSyncToTarget(pendingPlay);
+    play();
+    suppressLocalEvents = false;
     pendingPlay = null;
   }
-  if (pendingPause != null) {
-    player.seekTo(pendingPause || 0, true);
-    player.pauseVideo();
+
+  if (pendingPause !== null) {
+    suppressLocalEvents = true;
+    maybeSyncToTarget(pendingPause);
+    pause();
+    suppressLocalEvents = false;
     pendingPause = null;
   }
 }
+
+/* =========================
+   Parse YouTube ID
+========================= */
 function parseYouTubeId(input) {
   const s = String(input || "").trim();
   if (!s) return "";
+
   if (/^[a-zA-Z0-9_-]{11}$/.test(s)) return s;
+
   try {
     const url = new URL(s);
+
     if (url.hostname.includes("youtu.be")) {
       return url.pathname.replace("/", "").slice(0, 11);
     }
+
     if (url.hostname.includes("youtube.com")) {
       const v = url.searchParams.get("v");
       if (v) return v.slice(0, 11);
+
       const parts = url.pathname.split("/").filter(Boolean);
       const shortsIdx = parts.indexOf("shorts");
       if (shortsIdx >= 0 && parts[shortsIdx + 1]) return parts[shortsIdx + 1].slice(0, 11);
+
       const embedIdx = parts.indexOf("embed");
       if (embedIdx >= 0 && parts[embedIdx + 1]) return parts[embedIdx + 1].slice(0, 11);
     }
   } catch {}
+
   return "";
 }
 
-function ensurePlayer() {
+/* =========================
+   YouTube API + Player init
+========================= */
+function ensureYouTubeAPI() {
+  return new Promise((resolve) => {
+    if (window.YT && window.YT.Player) return resolve();
+
+    const existing = document.querySelector('script[src*="youtube.com/iframe_api"]');
+    if (!existing) {
+      const tag = document.createElement("script");
+      tag.src = "https://www.youtube.com/iframe_api";
+      document.head.appendChild(tag);
+    }
+
+    window.onYouTubeIframeAPIReady = () => resolve();
+  });
+}
+
+async function ensurePlayer() {
   if (player) return;
 
-  const tryCreate = () => {
-    if (!window.YT || !window.YT.Player) return false;
+  await ensureYouTubeAPI();
 
-    player = new YT.Player("player", {
-      height: "100%",
-      width: "100%",
-      videoId: "",
-      playerVars: { playsinline: 1, fs: 1, rel: 0, modestbranding: 1 },
-      events: {
-        onReady: () => {
-  playerReady = true;
-  setStatus("✅ Плеер готов. Войди в комнату.");
-  applyIfReady();
+  player = new YT.Player("player", {
+    height: "360",
+    width: "100%",
+    videoId: "",
+    playerVars: {
+      playsinline: 1,
+      rel: 0,
+      modestbranding: 1,
+    },
+    events: {
+      onReady: () => {
+        playerReady = true;
+        setStatus("✅ Плеер готов.");
+        applyIfReady();
 
-  const iframe = player.getIframe();
-  iframe.setAttribute("allowfullscreen", "");
-  iframe.setAttribute("allow", "autoplay; encrypted-media; fullscreen; picture-in-picture");
-  iframe.style.width = "100%";
-  iframe.style.height = "100%";
-},
-        onStateChange: (e) => {
-          if (!playerReady) return;
-          if (!currentRoomId) return;
-          if (!isIHost) return;
-          if (suppressLocalEvents) return;
-
-          const t = safeGetTime();
-          if (e.data === YT.PlayerState.PLAYING) {
-            socket.emit("video-play", { roomId: currentRoomId, time: t });
-          } else if (e.data === YT.PlayerState.PAUSED) {
-            socket.emit("video-pause", { roomId: currentRoomId, time: t });
+        // allow attributes (helps mobile)
+        try {
+          const iframe = player.getIframe();
+          if (iframe) {
+            iframe.setAttribute("allowfullscreen", "");
+            iframe.setAttribute("allow", "autoplay; encrypted-media; fullscreen; picture-in-picture");
+            iframe.style.width = "100%";
+            iframe.style.height = "100%";
           }
+        } catch {}
+      },
+
+      onStateChange: (e) => {
+        // Only host emits, and never when suppressed
+        if (!currentRoomId || !isHost || suppressLocalEvents) return;
+
+        // 1=playing, 2=paused
+        if (e.data === 1) {
+          socket.emit("video-play", { time: safeGetTime() });
+        } else if (e.data === 2) {
+          socket.emit("video-pause", { time: safeGetTime() });
         }
-      }
+      },
+    },
+  });
+}
+
+/* =========================
+   Host sync loop
+========================= */
+function stopHostSyncLoop() {
+  if (hostSyncTimer) clearInterval(hostSyncTimer);
+  hostSyncTimer = null;
+}
+
+function startHostSyncLoop() {
+  stopHostSyncLoop();
+  if (!isHost) return;
+
+  hostSyncTimer = setInterval(() => {
+    if (!currentRoomId || !playerReady) return;
+    // send a "soft sync" timecode to server/room
+    socket.emit("sync-time", {
+      time: safeGetTime(),
+      isPlaying: isActuallyPlaying(),
+      videoId: currentVideoId || null,
     });
-
-    return true;
-  };
-
-  const iv = setInterval(() => {
-    if (tryCreate()) clearInterval(iv);
-  }, 100);
+  }, HOST_SYNC_INTERVAL_MS);
 }
 
-function safeGetTime() {
-  try { return player ? Number(player.getCurrentTime() || 0) : 0; } catch { return 0; }
+function isActuallyPlaying() {
+  try {
+    if (!player || !player.getPlayerState) return false;
+    return player.getPlayerState() === 1;
+  } catch {
+    return false;
+  }
 }
 
-function loadVideo(videoId, time = 0, autoplay = false) {
-  ensurePlayer();
-  currentVideoId = videoId || null;
+/* =========================
+   UI actions
+========================= */
+function getRoomIdFromUrl() {
+  // supports /room/1234 in path
+  const m = window.location.pathname.match(/\/room\/(\d+)/);
+  if (m && m[1]) return m[1];
+  return "";
+}
 
-  if (!videoId) {
-    videoOverlay.style.display = "flex";
+function getQueryParam(name) {
+  const u = new URL(window.location.href);
+  return u.searchParams.get(name) || "";
+}
+
+function isCreatorFromUrl() {
+  const u = new URL(window.location.href);
+  return u.searchParams.get("asCreator") === "1";
+}
+
+function normalizeRoomId(s) {
+  s = String(s || "").trim();
+  // only digits
+  s = s.replace(/\D/g, "");
+  return s;
+}
+
+async function joinRoom() {
+  const rid = normalizeRoomId(roomIdEl?.value || getRoomIdFromUrl());
+  const uname = String(usernameEl?.value || getQueryParam("name") || "user").trim().slice(0, 20);
+
+  if (!rid) return setStatus("❌ Введи ID комнаты (только цифры).");
+  if (!uname) return setStatus("❌ Введи имя.");
+
+  await ensurePlayer();
+
+  currentRoomId = rid;
+  isHost = isCreatorFromUrl(); // provisional, server may override
+  stopHostSyncLoop();
+
+  socket.emit("join-room", { roomId: rid, username: uname, asCreator: isCreatorFromUrl() ? 1 : 0 });
+
+  if (leaveBtn) leaveBtn.disabled = false;
+  if (joinBtn) joinBtn.disabled = true;
+  if (roomIdEl) roomIdEl.disabled = true;
+  if (usernameEl) usernameEl.disabled = true;
+
+  setStatus("⏳ Подключение к комнате...");
+}
+
+function leaveRoom() {
+  if (!currentRoomId) return;
+  socket.emit("leave-room");
+
+  currentRoomId = "";
+  isHost = false;
+  hostSocketId = null;
+  stopHostSyncLoop();
+
+  if (leaveBtn) leaveBtn.disabled = true;
+  if (joinBtn) joinBtn.disabled = false;
+  if (roomIdEl) roomIdEl.disabled = false;
+  if (usernameEl) usernameEl.disabled = false;
+
+  setStatus("✅ Ты вышел из комнаты.");
+}
+
+function loadVideoAsHost() {
+  if (!currentRoomId) return setStatus("❌ Сначала войди в комнату.");
+  if (!isHost) return setStatus("❌ Загружать видео может только HOST.");
+
+  const id = parseYouTubeId(videoUrlEl?.value || "");
+  if (!id) return setStatus("❌ Вставь нормальную ссылку YouTube или ID (11 символов).");
+
+  currentVideoId = id;
+
+  // tell server/room
+  socket.emit("video-load", { videoId: id });
+
+  // local load
+  if (!playerReady) {
+    pendingLoad = { videoId: id, positionSec: 0, isPlaying: false };
+    setStatus("⏳ Ждём готовности плеера...");
     return;
   }
 
-  videoOverlay.style.display = "none";
-
-  const doLoad = () => {
-    if (!playerReady) return setTimeout(doLoad, 120);
-
-    suppressLocalEvents = true;
-    try {
-      if (autoplay) {
-        player.loadVideoById({ videoId, startSeconds: time });
-      } else {
-        player.cueVideoById({ videoId, startSeconds: time });
-      }
-    } finally {
-      setTimeout(() => (suppressLocalEvents = false), 300);
-    }
-  };
-  doLoad();
-}
-
-function seekTo(time) {
-  if (!playerReady || !player) return;
   suppressLocalEvents = true;
-  try { player.seekTo(Math.max(0, time), true); }
-  finally { setTimeout(() => (suppressLocalEvents = false), 250); }
-}
-function play() {
-  if (!playerReady || !player) return;
-  suppressLocalEvents = true;
-  try { player.playVideo(); }
-  finally { setTimeout(() => (suppressLocalEvents = false), 250); }
-}
-function pause() {
-  if (!playerReady || !player) return;
-  suppressLocalEvents = true;
-  try { player.pauseVideo(); }
-  finally { setTimeout(() => (suppressLocalEvents = false), 250); }
-}
+  try {
+    player.loadVideoById(id, 0);
+    player.pauseVideo(); // user will press play
+  } finally {
+    suppressLocalEvents = false;
+  }
 
-// Host sends video
-sendVideoBtn.addEventListener("click", () => {
-  if (!currentRoomId) return setStatus("❌ Сначала войди в комнату.");
-  if (!isIHost) return setStatus("❌ Только Host может менять видео.");
-
-  const vid = parseYouTubeId(ytLinkEl.value);
-  if (!vid) return setStatus("❌ Не смог распознать YouTube ссылку/ID.");
-
-  socket.emit("video-set", { roomId: currentRoomId, videoId: vid, time: 0 });
-  setStatus("✅ Видео отправлено в комнату.");
-});
-
-// Auto sync drift correction for viewers
-setInterval(() => {
-  if (!currentRoomId) return;
-  if (!autoSyncToggle.checked) return;
-  if (!playerReady || !player) return;
-  if (isIHost) return;
-  socket.emit("request-sync", { roomId: currentRoomId });
-}, 2500);
-
-// ============================
-// Chat
-// ============================
-function escapeHtml(s) {
-  return String(s || "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
-
-function addChatMessage({ username, text, ts }) {
-  const d = new Date(ts || Date.now());
-  const hh = String(d.getHours()).padStart(2, "0");
-  const mm = String(d.getMinutes()).padStart(2, "0");
-
-  const wrap = document.createElement("div");
-  wrap.className = "msg";
-  wrap.innerHTML = `
-    <div class="meta">${hh}:${mm} • <b>${escapeHtml(username)}</b></div>
-    <div class="text">${escapeHtml(text)}</div>
-  `;
-  chatBox.appendChild(wrap);
-  chatBox.scrollTop = chatBox.scrollHeight;
+  setStatus("✅ Видео загружено (HOST). Нажми Play.");
 }
 
 function sendChat() {
-  if (!currentRoomId) return setStatus("❌ Сначала войди в комнату.");
-  const text = String(chatInput.value || "").trim();
+  if (!currentRoomId) return;
+  const text = String(chatInput?.value || "").trim();
   if (!text) return;
-  socket.emit("chat-msg", { roomId: currentRoomId, username: myUsername || "anon", text });
+  socket.emit("chat-msg", { text });
   chatInput.value = "";
 }
 
-chatSendBtn.addEventListener("click", sendChat);
-chatInput.addEventListener("keydown", (e) => {
+async function copyInviteLink() {
+  if (!currentRoomId) return setStatus("❌ Сначала войди в комнату.");
+
+  const uname = String(usernameEl?.value || "user").trim();
+  const url = new URL(window.location.href);
+  url.pathname = `/room/${currentRoomId}`;
+  url.searchParams.set("name", uname || "user");
+  url.searchParams.delete("asCreator"); // invite as viewer
+
+  try {
+    await navigator.clipboard.writeText(url.toString());
+    setStatus("✅ Ссылка скопирована.");
+  } catch {
+    setStatus("❌ Не удалось скопировать (разреши доступ).");
+  }
+}
+
+if (joinBtn) joinBtn.addEventListener("click", joinRoom);
+if (leaveBtn) leaveBtn.addEventListener("click", leaveRoom);
+if (loadBtn) loadBtn.addEventListener("click", loadVideoAsHost);
+if (chatSendBtn) chatSendBtn.addEventListener("click", sendChat);
+if (chatInput) chatInput.addEventListener("keydown", (e) => {
   if (e.key === "Enter") sendChat();
 });
+if (inviteBtn) inviteBtn.addEventListener("click", copyInviteLink);
 
-// ============================
-// Socket listeners
-// ============================
-socket.on("error-msg", (msg) => setStatus("❌ " + msg));
+/* =========================
+   Socket handlers (room / roles / chat)
+   I listen multiple possible names to fit your server.
+========================= */
 
-socket.on("room-state", (st) => {
-  if (!st || !st.roomId) return;
-  if (String(st.roomId) !== String(currentRoomId)) return;
+// Generic room state updater
+function applyRoomState(state) {
+  // expected: { hostSocketId, videoId, playing, time }
+  if (!state) return;
 
-  hostSocketId = st.hostSocketId || null;
-  isIHost = hostSocketId && hostSocketId === socket.id;
+  if (state.hostSocketId !== undefined) hostSocketId = state.hostSocketId;
+  if (state.isHost !== undefined) isHost = !!state.isHost;
 
-  leaveBtn.disabled = false;
-  joinBtn.disabled = true;
-  roomIdEl.disabled = true;
-  usernameEl.disabled = true;
-
-  ensurePlayer();
-
-  // load or sync video
-  if (st.videoId && st.videoId !== currentVideoId) {
-    loadVideo(st.videoId, Number(st.time || 0), Boolean(st.playing));
-  } else if (st.videoId && currentVideoId) {
-    const target = Number(st.time || 0);
-    const cur = safeGetTime();
-    if (!isIHost && Math.abs(cur - target) > 0.9) seekTo(target);
-    if (!isIHost) (st.playing ? play() : pause());
+  // if server sends role by comparing socket id
+  if (hostSocketId && socket.id) {
+    isHost = (hostSocketId === socket.id) || isHost;
   }
 
-  setStatus(`✅ В комнате ${currentRoomId}. Ты: ${isIHost ? "Host" : "viewer"}.`);
+  // Host starts loop
+  if (isHost) startHostSyncLoop();
+  else stopHostSyncLoop();
+
+  // If video is set
+  if (state.videoId && state.videoId !== currentVideoId) {
+    currentVideoId = state.videoId;
+    const t = Number(state.time || 0);
+    const playing = !!state.playing;
+
+    if (!playerReady) {
+      pendingLoad = { videoId: state.videoId, positionSec: t, isPlaying: playing };
+    } else {
+      suppressLocalEvents = true;
+      try {
+        player.loadVideoById(state.videoId, t);
+        if (!playing) player.pauseVideo();
+      } finally {
+        suppressLocalEvents = false;
+      }
+    }
+  }
+}
+
+// Server confirms join
+socket.on("room-joined", (payload) => {
+  // payload can be { roomId, hostSocketId, isHost, state }
+  console.log("room-joined", payload);
+  setStatus("✅ В комнате.");
+  if (payload?.hostSocketId) hostSocketId = payload.hostSocketId;
+  if (payload?.isHost !== undefined) isHost = !!payload.isHost;
+
+  if (payload?.state) applyRoomState(payload.state);
+  else applyRoomState(payload);
 });
 
-socket.on("host-changed", ({ hostSocketId: newHost }) => {
-  hostSocketId = newHost || null;
-  isIHost = hostSocketId && hostSocketId === socket.id;
-  setStatus(isIHost ? "✅ Ты теперь Host." : "ℹ️ Хост сменился.");
+socket.on("joined-room", (payload) => {
+  console.log("joined-room", payload);
+  setStatus("✅ В комнате.");
+  if (payload?.hostSocketId) hostSocketId = payload.hostSocketId;
+  if (payload?.isHost !== undefined) isHost = !!payload.isHost;
+  if (payload?.state) applyRoomState(payload.state);
+  else applyRoomState(payload);
 });
 
-pendingLoad = {
-  videoId,
-  positionSec: Number(time || 0),
-  isPlaying: Boolean(playing)
-};
+socket.on("room-state", (state) => {
+  console.log("room-state", state);
+  applyRoomState(state);
+});
 
-applyIfReady();
-setStatus("✅ Видео синхронизировано.");
+socket.on("room-error", (msg) => {
+  setStatus("❌ " + (msg || "Ошибка комнаты"));
+});
+
+// Chat
+socket.on("chat-msg", (p) => {
+  const from = p?.from ? `${p.from}: ` : "";
+  appendChatLine(from + (p?.text || ""));
+});
+
+socket.on("system-msg", (p) => {
+  appendChatLine("• " + (p?.text || p || ""));
+});
+
+/* =========================
+   VIDEO EVENTS from server -> viewers apply
+========================= */
+socket.on("video-load", ({ videoId }) => {
+  if (!currentRoomId) return;
+  if (!videoId) return;
+
+  currentVideoId = videoId;
+
+  if (!playerReady) {
+    pendingLoad = { videoId, positionSec: 0, isPlaying: false };
+    setStatus("⏳ Ждём плеер...");
+    return;
+  }
+
+  suppressLocalEvents = true;
+  try {
+    player.loadVideoById(videoId, 0);
+    player.pauseVideo();
+  } finally {
+    suppressLocalEvents = false;
+  }
+
+  setStatus("✅ Видео загружено.");
+});
 
 socket.on("video-play", ({ time }) => {
-  if (isIHost) return;
-  const target = Number(time || 0);
-  maybeSyncToTarget(target);
+  if (!currentRoomId) return;
+  if (isHost) return; // host already controls
 
-  play();
+  const target = Number(time || 0);
+
+  if (!playerReady) {
+    pendingPlay = target;
+    return;
+  }
+
+  suppressLocalEvents = true;
+  try {
+    maybeSyncToTarget(target);
+    play();
+  } finally {
+    suppressLocalEvents = false;
+  }
 });
 
 socket.on("video-pause", ({ time }) => {
-  if (isIHost) return;
+  if (!currentRoomId) return;
+  if (isHost) return;
+
   const target = Number(time || 0);
-  maybeSyncToTarget(target);
-  pause();
+
+  if (!playerReady) {
+    pendingPause = target;
+    return;
+  }
+
+  suppressLocalEvents = true;
+  try {
+    maybeSyncToTarget(target);
+    pause();
+  } finally {
+    suppressLocalEvents = false;
+  }
 });
 
 socket.on("video-seek", ({ time }) => {
-  if (isIHost) return;
-  seekTo(Number(time || 0));
+  if (!currentRoomId) return;
+  if (isHost) return;
+
+  const target = Number(time || 0);
+
+  if (!playerReady) {
+    pendingSeek = target;
+    return;
+  }
+
+  suppressLocalEvents = true;
+  try {
+    // seek should be immediate, but still protected by anti-spam logic
+    seekTo(target);
+  } finally {
+    suppressLocalEvents = false;
+  }
 });
 
-socket.on("chat-msg", (m) => addChatMessage(m));
+/* =========================
+   Soft sync timecodes (host -> server -> viewers)
+   Event name variants: "sync-time" or "sync-state"
+========================= */
+function onSyncTime(payload) {
+  if (!currentRoomId) return;
+  if (isHost) return;
 
-// voice button placeholder (не ломаем UI)
-$("voiceBtn").addEventListener("click", () => {
-  setStatus("ℹ️ Voice пока кнопка-заглушка. Хоть сейчас подключу полноценный WebRTC Voice.");
-});
+  if (!payload) return;
 
-// init
-ensurePlayer();
+  // if server sends { time, isPlaying, videoId }
+  const t = Number(payload.time || 0);
+  const playing = !!payload.isPlaying;
+  const vid = payload.videoId || null;
+
+  // if video changed
+  if (vid && vid !== currentVideoId) {
+    currentVideoId = vid;
+    if (!playerReady) {
+      pendingLoad = { videoId: vid, positionSec: t, isPlaying: playing };
+      return;
+    }
+    suppressLocalEvents = true;
+    try {
+      player.loadVideoById(vid, t);
+      if (!playing) player.pauseVideo();
+    } finally {
+      suppressLocalEvents = false;
+    }
+    return;
+  }
+
+  if (!playerReady) return;
+
+  // key: DO NOT pause/play here often, only sync time softly
+  maybeSyncToTarget(t);
+
+  // If server says paused and we are playing: pause once (rare)
+  if (!playing && isActuallyPlaying()) {
+    suppressLocalEvents = true;
+    try { pause(); } finally { suppressLocalEvents = false; }
+  }
+}
+
+socket.on("sync-time", onSyncTime);
+socket.on("sync-state", onSyncTime);
+
+/* =========================
+   Local seek tracking for host (optional)
+   If you have a custom UI scrubber: emit "video-seek"
+   Here we detect manual seeks by listening time jumps (host only)
+========================= */
+let lastHostTime = 0;
+setInterval(() => {
+  if (!currentRoomId || !isHost || !playerReady || suppressLocalEvents) return;
+
+  const t = safeGetTime();
+  const dt = Math.abs(t - lastHostTime);
+
+  // if jumped a lot quickly -> user probably dragged seek
+  if (dt > 2.0) {
+    socket.emit("video-seek", { time: t });
+  }
+
+  lastHostTime = t;
+}, 800);
+
+/* =========================
+   Auto-fill from URL on page load
+========================= */
+(function initFromUrl() {
+  const rid = getRoomIdFromUrl();
+  const name = getQueryParam("name");
+  if (rid && roomIdEl && !roomIdEl.value) roomIdEl.value = rid;
+  if (name && usernameEl && !usernameEl.value) usernameEl.value = name;
+
+  // prepare player early
+  ensurePlayer().catch(() => {});
+})();
