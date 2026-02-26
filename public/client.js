@@ -116,7 +116,10 @@ let pendingLoad = null;     // { videoId, positionSec, isPlaying }
 let pendingSeek = null;     // number
 let pendingPlay = null;     // number
 let pendingPause = null;    // number
-
+const SYNC_THRESHOLD = 1.2;       // меньше — не трогаем
+const HARD_SYNC_THRESHOLD = 4.0;  // сильно улетели — жестко синкаем
+const EMIT_INTERVAL_MS = 1200;    // хост шлет таймкод
+let lastSyncApplyAt = 0;
 function applyIfReady() {
   if (!player || !playerReady) return;
 
@@ -170,10 +173,10 @@ function ensurePlayer() {
     if (!window.YT || !window.YT.Player) return false;
 
     player = new YT.Player("player", {
-      height: "360",
+      height: "100%",
       width: "100%",
       videoId: "",
-      playerVars: { playsinline: 1, rel: 0, modestbranding: 1 },
+      playerVars: { playsinline: 1, fs: 1, rel: 0, modestbranding: 1 },
       events: {
         onReady: () => {
   playerReady = true;
@@ -373,7 +376,19 @@ socket.on("video-play", ({ time }) => {
   if (isIHost) return;
   const target = Number(time || 0);
   const cur = safeGetTime();
-  if (Math.abs(cur - target) > 0.9) seekTo(target);
+  const diff = Math.abs(cur - target);
+
+if (diff > HARD_SYNC_THRESHOLD) {
+  seekTo(target);
+} else if (diff > SYNC_THRESHOLD) {
+  const now = Date.now();
+  if (now - lastSyncApplyAt > 900) {
+    lastSyncApplyAt = now;
+    seekTo(target);
+  }
+
+  }
+}
   play();
 });
 
