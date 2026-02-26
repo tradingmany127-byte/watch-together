@@ -1,6 +1,6 @@
-// server.js (FULL REWRITE)
-// Node + Express + Socket.IO
-// Host-only control for video. Auto-delete room when empty.
+// server.js — Host-only video control (FULL)
+// Node.js + Express + Socket.IO
+// Rooms are in-memory. When room becomes empty => deleted.
 
 const path = require("path");
 const express = require("express");
@@ -11,283 +11,227 @@ const app = express();
 const server = http.createServer(app);
 
 const io = new Server(server, {
-  cors: { origin: "*" },
+  cors: { origin: "*", methods: ["GET", "POST"] },
 });
 
-// ----- Static -----
+// ---------- Static ----------
 app.use(express.static(path.join(__dirname, "public")));
 
-// ----- In-memory rooms -----
-// rooms.get(roomId) => {
-//   id: string,
-//   password: string,
-//   hostSocketId: string|null,
-//   hostName: string|null,
-//   members: Map(socketId => { name: string }),
-//   video: { videoId: string|null, time: number, playing: boolean, updatedAt: number },
-//   logs: Array<{ t:number, text:string }>
-// }
+// ---------- Rooms (in-memory) ----------
+/**
+ * rooms.get(roomId) => {
+ *   id: string,
+ *   hostSocketId: string|null,
+ *   hostName: string|null,
+ *   users: Map<socketId, { name: string }>,
+ *   video: { videoId: string|null, time: number, playing: boolean, updatedAt: number },
+ * }
+ */
 const rooms = new Map();
 
+function isDigitsOnly(id) {
+  return /^\d+$/.test(String(id || "").trim());
+}
 function now() {
   return Date.now();
 }
 
-function isDigitsOnly(s) {
-  return /^\d+$/.test(String(s || "").trim());
-}
-
-function addLog(room, text) {
-  const item = { t: now(), text: String(text) };
-  room.logs.push(item);
-  // ограничим логи, чтобы память не росла бесконечно
-  if (room.logs.length > 200) room.logs.splice(0, room.logs.length - 200);
-  io.to(room.id).emit("logs:new", item);
-}
-
 function ensureRoom(roomId) {
-  if (!rooms.has(roomId)) return null;
+  if (!rooms.has(roomId)) {
+    rooms.set(roomId, {
+      id: roomId,
+      hostSocketId: null,
+      hostName: null,
+      users: new Map(),
+      video: { videoId: null, time: 0, playing: false, updatedAt: now() },
+    });
+  }
   return rooms.get(roomId);
 }
 
-function roomStatePayload(room, socketId) {
-  const me = room.members.get(socketId);
+function serverTime(room) {
+  // вычисляем "живое" время, если playing
+  if (!room.video.playing) return room.video.time;
+  const dt = (now() - room.video.updatedAt) / 1000;
+  return room.video.time + dt;
+}
+
+function mustBeHost(socket, room) {
+  return room && room.hostSocketId === socket.id;
+}
+
+function statePayload(room, socketId) {
+  const me = room.users.get(socketId);
   return {
     roomId: room.id,
-    isHost: room.hostSocketId === socketId,
-    hostName: room.hostName,
-    membersCount: room.members.size,
-    logs: room.logs,
+    me: { name: me?.name || "", isHost: room.hostSocketId === socketId },
+    host: { name: room.hostName, socketId: room.hostSocketId },
+    usersCount: room.users.size,
     video: {
       videoId: room.video.videoId,
-      time: room.video.time,
+      time: serverTime(room),
       playing: room.video.playing,
       updatedAt: room.video.updatedAt,
     },
-    me: { name: me?.name || "" },
   };
 }
 
-// ----- API create room (optional) -----
-// Если у тебя на клиенте create-room через fetch — оставляю.
-// Требования: id только цифры, пароль обязателен.
-app.get("/api/create-room/:id", (req, res) => {
-  const id = String(req.params.id || "").trim();
-  const password = String(req.query.pwd || "").trim(); // например /api/create-room/123?pwd=xxx
+function pickNewHost(room) {
+  const it = room.users.keys().next();
+  if (it.done) return null;
+  return it.value;
+}
 
-  if (!id) return res.status(400).json({ ok: false, error: "MISSING_ID" });
-  if (!isDigitsOnly(id)) return res.status(400).json({ ok: false, error: "ONLY_DIGITS" });
-  if (!password) return res.status(400).json({ ok: false, error: "MISSING_PASSWORD" });
+function cleanupRoomIfEmpty(roomId) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+  if (room.users.size === 0) {
+    rooms.delete(roomId);
+  }
+}
 
-  if (rooms.has(id)) return res.status(409).json({ ok: false, error: "ALREADY_EXISTS" });
-
-  rooms.set(id, {
-    id,
-    password,
-    hostSocketId: null,
-    hostName: null,
-    members: new Map(),
-    video: { videoId: null, time: 0, playing: false, updatedAt: now() },
-    logs: [],
-  });
-
-  return res.json({ ok: true, roomId: id });
-});
-
-// ----- Socket.IO -----
+// ---------- Socket.IO ----------
 io.on("connection", (socket) => {
-  // где сейчас находится сокет
   socket.data.roomId = null;
 
-  // -----------------------
-  // JOIN / LEAVE
-  // -----------------------
-  // ожидаемый payload:
-  // { roomId, username, password, asCreator? }
+  // JOIN
+  // payload: { roomId, username }
   socket.on("join-room", (payload = {}) => {
-    try {
-      const roomId = String(payload.roomId || "").trim();
-      const username = String(payload.username || "").trim();
-      const password = String(payload.password || "").trim();
-      const asCreator = !!payload.asCreator;
+    const roomId = String(payload.roomId || "").trim();
+    const username = String(payload.username || "").trim();
 
-      if (!roomId) {
-        socket.emit("join-error", { error: "MISSING_ID" });
-        return;
-      }
-      if (!isDigitsOnly(roomId)) {
-        socket.emit("join-error", { error: "ONLY_DIGITS" });
-        return;
-      }
-      if (!username) {
-        socket.emit("join-error", { error: "MISSING_NAME" });
-        return;
-      }
-      if (!password) {
-        socket.emit("join-error", { error: "MISSING_PASSWORD" });
-        return;
-      }
+    if (!roomId) return socket.emit("join-error", { error: "MISSING_ID" });
+    if (!isDigitsOnly(roomId)) return socket.emit("join-error", { error: "ONLY_DIGITS" });
+    if (!username) return socket.emit("join-error", { error: "MISSING_NAME" });
 
-      const room = ensureRoom(roomId);
-      if (!room) {
-        socket.emit("join-error", { error: "NOT_FOUND" });
-        return;
-      }
-      if (room.password !== password) {
-        socket.emit("join-error", { error: "BAD_PASSWORD" });
-        return;
-      }
-
-      // если сокет уже был в комнате — выйдем
-      if (socket.data.roomId && socket.data.roomId !== roomId) {
-        safeLeave(socket);
-      }
-
-      socket.join(roomId);
-      socket.data.roomId = roomId;
-
-      room.members.set(socket.id, { name: username });
-
-      // назначение хоста:
-      // - если host пустой → первый вошедший становится host
-      // - или если asCreator=true (создатель зашёл) → если host пустой, становится host
-      if (!room.hostSocketId) {
-        room.hostSocketId = socket.id;
-        room.hostName = username;
-        addLog(room, `HOST назначен: ${username}`);
-      } else {
-        addLog(room, `${username} вошёл в комнату`);
-      }
-
-      // отдадим state вошедшему
-      socket.emit("room-state", roomStatePayload(room, socket.id));
-
-      // всем обновим кратко инфу о комнате (опционально)
-      io.to(roomId).emit("room-members", { count: room.members.size, hostName: room.hostName });
-
-    } catch (e) {
-      socket.emit("join-error", { error: "JOIN_FAILED" });
+    // если уже в другой комнате — выйдем
+    if (socket.data.roomId && socket.data.roomId !== roomId) {
+      leaveCurrentRoom(socket);
     }
+
+    const room = ensureRoom(roomId);
+
+    socket.join(roomId);
+    socket.data.roomId = roomId;
+
+    room.users.set(socket.id, { name: username });
+
+    // первый вошедший => HOST
+    if (!room.hostSocketId) {
+      room.hostSocketId = socket.id;
+      room.hostName = username;
+      io.to(roomId).emit("host-changed", { hostSocketId: room.hostSocketId, hostName: room.hostName });
+    }
+
+    // отправим состояние вошедшему
+    socket.emit("room-state", statePayload(room, socket.id));
+    // остальным сообщим обновление
+    io.to(roomId).emit("room-users", {
+      usersCount: room.users.size,
+      hostName: room.hostName,
+    });
   });
 
+  // LEAVE (ручной)
   socket.on("leave-room", () => {
-    safeLeave(socket);
+    leaveCurrentRoom(socket);
   });
 
+  // DISCONNECT
   socket.on("disconnect", () => {
-    safeLeave(socket, true);
+    leaveCurrentRoom(socket, true);
   });
 
-  function safeLeave(sock, isDisconnect = false) {
+  function leaveCurrentRoom(sock, isDisconnect = false) {
     const roomId = sock.data.roomId;
     if (!roomId) return;
 
-    const room = ensureRoom(roomId);
+    const room = rooms.get(roomId);
     sock.leave(roomId);
     sock.data.roomId = null;
 
     if (!room) return;
 
-    const me = room.members.get(sock.id);
-    room.members.delete(sock.id);
+    room.users.delete(sock.id);
 
-    const meName = me?.name || "user";
-
-    // если вышел хост → передаём хост любому оставшемуся
+    // если вышел HOST — назначим нового
     if (room.hostSocketId === sock.id) {
-      const next = room.members.keys().next();
-      if (!next.done) {
-        const nextId = next.value;
-        room.hostSocketId = nextId;
-        room.hostName = room.members.get(nextId)?.name || "HOST";
-        addLog(room, `HOST вышел → новый HOST: ${room.hostName}`);
+      const newHostId = pickNewHost(room);
+      if (newHostId) {
+        room.hostSocketId = newHostId;
+        room.hostName = room.users.get(newHostId)?.name || "HOST";
+        io.to(roomId).emit("host-changed", { hostSocketId: room.hostSocketId, hostName: room.hostName });
       } else {
         room.hostSocketId = null;
         room.hostName = null;
       }
-    } else {
-      addLog(room, `${meName} вышел из комнаты`);
     }
 
-    io.to(roomId).emit("room-members", { count: room.members.size, hostName: room.hostName });
+    io.to(roomId).emit("room-users", {
+      usersCount: room.users.size,
+      hostName: room.hostName,
+    });
 
     // авто-удаление комнаты если пусто
-    if (room.members.size === 0) {
-      rooms.delete(roomId);
-      // лог некуда слать — комнаты уже нет
-      return;
-    }
+    cleanupRoomIfEmpty(roomId);
   }
 
-  // -----------------------
-  // CHAT (any member)
-  // -----------------------
+  // ---------- CHAT (everyone) ----------
   socket.on("chat-send", (payload = {}) => {
     const roomId = socket.data.roomId;
     if (!roomId) return;
 
-    const room = ensureRoom(roomId);
+    const room = rooms.get(roomId);
     if (!room) return;
 
-    const me = room.members.get(socket.id);
+    const me = room.users.get(socket.id);
     if (!me) return;
 
     const text = String(payload.text || "").trim();
     if (!text) return;
 
-    io.to(roomId).emit("chat-msg", {
-      name: me.name,
-      text,
-      at: now(),
-    });
+    io.to(roomId).emit("chat-msg", { name: me.name, text, at: now() });
   });
 
-  // -----------------------
-  // VIDEO CONTROL (HOST ONLY)
-  // -----------------------
-  function mustBeHost(room) {
-    return room && room.hostSocketId === socket.id;
-  }
+  // ---------- VIDEO CONTROL (HOST ONLY) ----------
+  // Все события управления видео — только от HOST.
+  // Если не HOST — сервер просто игнорирует.
 
   socket.on("video-load", (payload = {}) => {
     const roomId = socket.data.roomId;
     if (!roomId) return;
-    const room = ensureRoom(roomId);
+    const room = rooms.get(roomId);
     if (!room) return;
 
-    if (!mustBeHost(room)) return; // 🔒 ONLY HOST
+    if (!mustBeHost(socket, room)) return; // 🔒 ONLY HOST
 
     const videoId = String(payload.videoId || "").trim();
-    const time = Number(payload.time || 0);
-    const playing = !!payload.playing;
-
     if (!videoId) return;
 
     room.video.videoId = videoId;
-    room.video.time = Number.isFinite(time) ? time : 0;
-    room.video.playing = playing;
+    room.video.time = 0;
+    room.video.playing = false;
     room.video.updatedAt = now();
-
-    addLog(room, `Видео установлено: ${videoId}`);
 
     io.to(roomId).emit("video-load", {
       videoId: room.video.videoId,
       time: room.video.time,
       playing: room.video.playing,
     });
+
+    io.to(roomId).emit("room-state", statePayload(room, socket.id));
   });
 
   socket.on("video-play", (payload = {}) => {
     const roomId = socket.data.roomId;
     if (!roomId) return;
-    const room = ensureRoom(roomId);
+    const room = rooms.get(roomId);
     if (!room) return;
 
-    if (!mustBeHost(room)) return; // 🔒 ONLY HOST
+    if (!mustBeHost(socket, room)) return; // 🔒 ONLY HOST
 
-    const time = Number(payload.time || 0);
-
-    room.video.time = Number.isFinite(time) ? time : room.video.time;
+    const t = Number(payload.time || serverTime(room));
+    room.video.time = Number.isFinite(t) ? t : serverTime(room);
     room.video.playing = true;
     room.video.updatedAt = now();
 
@@ -297,14 +241,13 @@ io.on("connection", (socket) => {
   socket.on("video-pause", (payload = {}) => {
     const roomId = socket.data.roomId;
     if (!roomId) return;
-    const room = ensureRoom(roomId);
+    const room = rooms.get(roomId);
     if (!room) return;
 
-    if (!mustBeHost(room)) return; // 🔒 ONLY HOST
+    if (!mustBeHost(socket, room)) return; // 🔒 ONLY HOST
 
-    const time = Number(payload.time || 0);
-
-    room.video.time = Number.isFinite(time) ? time : room.video.time;
+    const t = Number(payload.time || serverTime(room));
+    room.video.time = Number.isFinite(t) ? t : serverTime(room);
     room.video.playing = false;
     room.video.updatedAt = now();
 
@@ -314,56 +257,52 @@ io.on("connection", (socket) => {
   socket.on("video-seek", (payload = {}) => {
     const roomId = socket.data.roomId;
     if (!roomId) return;
-    const room = ensureRoom(roomId);
+    const room = rooms.get(roomId);
     if (!room) return;
 
-    if (!mustBeHost(room)) return; // 🔒 ONLY HOST
+    if (!mustBeHost(socket, room)) return; // 🔒 ONLY HOST
 
-    const time = Number(payload.time || 0);
-    room.video.time = Number.isFinite(time) ? time : room.video.time;
+    const t = Number(payload.time || 0);
+    room.video.time = Number.isFinite(t) ? Math.max(0, t) : room.video.time;
     room.video.updatedAt = now();
 
     io.to(roomId).emit("video-seek", { time: room.video.time });
   });
 
-  // OPTIONAL: host can periodically send sync-time
+  // optional: host beacon / sync
   socket.on("sync-time", (payload = {}) => {
     const roomId = socket.data.roomId;
     if (!roomId) return;
-    const room = ensureRoom(roomId);
+    const room = rooms.get(roomId);
     if (!room) return;
 
-    if (!mustBeHost(room)) return; // 🔒 ONLY HOST
+    if (!mustBeHost(socket, room)) return; // 🔒 ONLY HOST
 
-    const time = Number(payload.time || 0);
+    const t = Number(payload.time || serverTime(room));
     const playing = !!payload.playing;
-    const videoId = String(payload.videoId || "").trim();
 
-    if (videoId) room.video.videoId = videoId;
-    room.video.time = Number.isFinite(time) ? time : room.video.time;
+    room.video.time = Number.isFinite(t) ? t : serverTime(room);
     room.video.playing = playing;
     room.video.updatedAt = now();
 
     io.to(roomId).emit("sync-time", {
       videoId: room.video.videoId,
-      time: room.video.time,
+      time: serverTime(room),
       playing: room.video.playing,
     });
   });
 
-  // -----------------------
-  // STATE REQUEST
-  // -----------------------
-  socket.on("room-state:get", () => {
+  // request state
+  socket.on("get-state", () => {
     const roomId = socket.data.roomId;
     if (!roomId) return;
-    const room = ensureRoom(roomId);
+    const room = rooms.get(roomId);
     if (!room) return;
-    socket.emit("room-state", roomStatePayload(room, socket.id));
+    socket.emit("room-state", statePayload(room, socket.id));
   });
 });
 
-// ----- Listen (Render-friendly) -----
+// ---------- Listen (Render friendly) ----------
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, "0.0.0.0", () => {
   console.log("Server running on port", PORT);
