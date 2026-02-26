@@ -1,7 +1,3 @@
-// server.js — Host-only video control (FULL)
-// Node.js + Express + Socket.IO
-// Rooms are in-memory. When room becomes empty => deleted.
-
 const path = require("path");
 const express = require("express");
 const http = require("http");
@@ -14,24 +10,22 @@ const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] },
 });
 
-// ---------- Static ----------
 app.use(express.static(path.join(__dirname, "public")));
 
-// ---------- Rooms (in-memory) ----------
-/**
- * rooms.get(roomId) => {
- *   id: string,
- *   hostSocketId: string|null,
- *   hostName: string|null,
- *   users: Map<socketId, { name: string }>,
- *   video: { videoId: string|null, time: number, playing: boolean, updatedAt: number },
- * }
- */
+// roomId -> room
 const rooms = new Map();
-
-function isDigitsOnly(id) {
-  return /^\d+$/.test(String(id || "").trim());
+/**
+room = {
+  hostSocketId: string|null,
+  hostName: string|null,
+  videoId: string|null,
+  playing: boolean,
+  time: number,
+  updatedAt: number,
+  users: Map(socketId -> { username })
 }
+*/
+
 function now() {
   return Date.now();
 }
@@ -39,74 +33,90 @@ function now() {
 function ensureRoom(roomId) {
   if (!rooms.has(roomId)) {
     rooms.set(roomId, {
-      id: roomId,
       hostSocketId: null,
       hostName: null,
+      videoId: null,
+      playing: false,
+      time: 0,
+      updatedAt: now(),
       users: new Map(),
-      video: { videoId: null, time: 0, playing: false, updatedAt: now() },
     });
   }
   return rooms.get(roomId);
 }
 
-function serverTime(room) {
-  // вычисляем "живое" время, если playing
-  if (!room.video.playing) return room.video.time;
-  const dt = (now() - room.video.updatedAt) / 1000;
-  return room.video.time + dt;
+// "живое" время (если playing)
+function getServerTime(room) {
+  if (!room.playing) return room.time;
+  const dt = (now() - room.updatedAt) / 1000;
+  return room.time + dt;
 }
 
-function mustBeHost(socket, room) {
-  return room && room.hostSocketId === socket.id;
+function emitMany(socketOrIo, eventNames, payload) {
+  for (const ev of eventNames) socketOrIo.emit(ev, payload);
 }
 
-function statePayload(room, socketId) {
+// для совместимости с разными client.js
+const OUT = {
+  ROOM_STATE: ["room-state", "roomState", "state"],
+  ROOM_USERS: ["room-users", "roomUsers", "users"],
+  HOST_CHANGED: ["host-changed", "hostChanged"],
+  VIDEO_LOAD: ["video-load", "videoLoad", "load-video", "loadVideo"],
+  VIDEO_PLAY: ["video-play", "videoPlay", "play-video", "playVideo"],
+  VIDEO_PAUSE: ["video-pause", "videoPause", "pause-video", "pauseVideo"],
+  VIDEO_SEEK: ["video-seek", "videoSeek", "seek-video", "seekVideo"],
+  SYNC_TIME: ["sync-time", "syncTime", "sync"],
+  CHAT_MSG: ["chat-msg", "chatMsg", "message"],
+  JOIN_ERR: ["join-error", "joinError", "error-join"],
+};
+
+function roomStatePayload(room, roomId, socketId) {
   const me = room.users.get(socketId);
   return {
-    roomId: room.id,
-    me: { name: me?.name || "", isHost: room.hostSocketId === socketId },
-    host: { name: room.hostName, socketId: room.hostSocketId },
+    roomId,
+    me: { username: me?.username || "", isHost: room.hostSocketId === socketId },
+    hostSocketId: room.hostSocketId,
+    hostName: room.hostName,
     usersCount: room.users.size,
-    video: {
-      videoId: room.video.videoId,
-      time: serverTime(room),
-      playing: room.video.playing,
-      updatedAt: room.video.updatedAt,
-    },
+    videoId: room.videoId,
+    playing: room.playing,
+    time: getServerTime(room),
+    updatedAt: room.updatedAt,
   };
+}
+
+function setHost(room, roomId, socketId) {
+  room.hostSocketId = socketId;
+  room.hostName = room.users.get(socketId)?.username || "HOST";
+  io.to(roomId).emit(OUT.HOST_CHANGED[0], { hostSocketId: room.hostSocketId, hostName: room.hostName });
+  // ещё дубль-ивенты для совместимости
+  emitMany(io.to(roomId), OUT.HOST_CHANGED.slice(1), { hostSocketId: room.hostSocketId, hostName: room.hostName });
 }
 
 function pickNewHost(room) {
   const it = room.users.keys().next();
-  if (it.done) return null;
-  return it.value;
+  return it.done ? null : it.value;
 }
 
-function cleanupRoomIfEmpty(roomId) {
-  const room = rooms.get(roomId);
-  if (!room) return;
-  if (room.users.size === 0) {
-    rooms.delete(roomId);
-  }
+function isHost(room, socket) {
+  return room && room.hostSocketId === socket.id;
 }
 
-// ---------- Socket.IO ----------
 io.on("connection", (socket) => {
   socket.data.roomId = null;
 
-  // JOIN
-  // payload: { roomId, username }
-  socket.on("join-room", (payload = {}) => {
-    const roomId = String(payload.roomId || "").trim();
-    const username = String(payload.username || "").trim();
+  // ---------- JOIN (aliases) ----------
+  const joinHandler = (payload = {}) => {
+    const roomId = String(payload.roomId || payload.room || payload.id || "").trim();
+    const username = String(payload.username || payload.name || payload.user || "").trim();
 
-    if (!roomId) return socket.emit("join-error", { error: "MISSING_ID" });
-    if (!isDigitsOnly(roomId)) return socket.emit("join-error", { error: "ONLY_DIGITS" });
-    if (!username) return socket.emit("join-error", { error: "MISSING_NAME" });
+    if (!roomId) return emitMany(socket, OUT.JOIN_ERR, { error: "MISSING_ROOM" });
+    if (!/^\d+$/.test(roomId)) return emitMany(socket, OUT.JOIN_ERR, { error: "ONLY_DIGITS" });
+    if (!username) return emitMany(socket, OUT.JOIN_ERR, { error: "MISSING_NAME" });
 
-    // если уже в другой комнате — выйдем
+    // если был в другой комнате — выйти
     if (socket.data.roomId && socket.data.roomId !== roomId) {
-      leaveCurrentRoom(socket);
+      leaveRoom(socket);
     }
 
     const room = ensureRoom(roomId);
@@ -114,196 +124,226 @@ io.on("connection", (socket) => {
     socket.join(roomId);
     socket.data.roomId = roomId;
 
-    room.users.set(socket.id, { name: username });
+    room.users.set(socket.id, { username });
 
-    // первый вошедший => HOST
+    // первый вошёл -> host
     if (!room.hostSocketId) {
-      room.hostSocketId = socket.id;
-      room.hostName = username;
-      io.to(roomId).emit("host-changed", { hostSocketId: room.hostSocketId, hostName: room.hostName });
+      setHost(room, roomId, socket.id);
     }
 
-    // отправим состояние вошедшему
-    socket.emit("room-state", statePayload(room, socket.id));
-    // остальным сообщим обновление
-    io.to(roomId).emit("room-users", {
-      usersCount: room.users.size,
-      hostName: room.hostName,
+    // отдать стейт вошедшему
+    const st = roomStatePayload(room, roomId, socket.id);
+    emitMany(socket, OUT.ROOM_STATE, st);
+
+    // обновление для всех
+    const usersPayload = { usersCount: room.users.size, hostName: room.hostName, hostSocketId: room.hostSocketId };
+    emitMany(io.to(roomId), OUT.ROOM_USERS, usersPayload);
+
+    // и продублируем текущий видео-стейт (чтобы у клиента панель/плеер появились)
+    emitMany(socket, OUT.SYNC_TIME, {
+      videoId: room.videoId,
+      time: getServerTime(room),
+      playing: room.playing,
+      updatedAt: room.updatedAt,
     });
-  });
+  };
 
-  // LEAVE (ручной)
-  socket.on("leave-room", () => {
-    leaveCurrentRoom(socket);
-  });
+  socket.on("join-room", joinHandler);
+  socket.on("joinRoom", joinHandler);
+  socket.on("join", joinHandler);
 
-  // DISCONNECT
-  socket.on("disconnect", () => {
-    leaveCurrentRoom(socket, true);
-  });
+  // ---------- LEAVE ----------
+  socket.on("leave-room", () => leaveRoom(socket));
+  socket.on("leaveRoom", () => leaveRoom(socket));
+  socket.on("leave", () => leaveRoom(socket));
 
-  function leaveCurrentRoom(sock, isDisconnect = false) {
+  socket.on("disconnect", () => leaveRoom(socket, true));
+
+  function leaveRoom(sock, silent = false) {
     const roomId = sock.data.roomId;
     if (!roomId) return;
 
     const room = rooms.get(roomId);
     sock.leave(roomId);
     sock.data.roomId = null;
-
     if (!room) return;
 
     room.users.delete(sock.id);
 
-    // если вышел HOST — назначим нового
+    // если вышел host -> новый host
     if (room.hostSocketId === sock.id) {
       const newHostId = pickNewHost(room);
-      if (newHostId) {
-        room.hostSocketId = newHostId;
-        room.hostName = room.users.get(newHostId)?.name || "HOST";
-        io.to(roomId).emit("host-changed", { hostSocketId: room.hostSocketId, hostName: room.hostName });
-      } else {
+      if (newHostId) setHost(room, roomId, newHostId);
+      else {
         room.hostSocketId = null;
         room.hostName = null;
       }
     }
 
-    io.to(roomId).emit("room-users", {
-      usersCount: room.users.size,
-      hostName: room.hostName,
-    });
+    const usersPayload = { usersCount: room.users.size, hostName: room.hostName, hostSocketId: room.hostSocketId };
+    emitMany(io.to(roomId), OUT.ROOM_USERS, usersPayload);
 
-    // авто-удаление комнаты если пусто
-    cleanupRoomIfEmpty(roomId);
+    if (room.users.size === 0) rooms.delete(roomId);
   }
 
   // ---------- CHAT (everyone) ----------
-  socket.on("chat-send", (payload = {}) => {
+  const chatHandler = (payload = {}) => {
     const roomId = socket.data.roomId;
     if (!roomId) return;
-
     const room = rooms.get(roomId);
     if (!room) return;
 
     const me = room.users.get(socket.id);
     if (!me) return;
 
-    const text = String(payload.text || "").trim();
+    const text = String(payload.text || payload.msg || payload.message || "").trim();
     if (!text) return;
 
-    io.to(roomId).emit("chat-msg", { name: me.name, text, at: now() });
-  });
+    const msg = { name: me.username, text, at: now() };
+    emitMany(io.to(roomId), OUT.CHAT_MSG, msg);
+  };
+
+  socket.on("chat-send", chatHandler);
+  socket.on("chatSend", chatHandler);
+  socket.on("chat", chatHandler);
 
   // ---------- VIDEO CONTROL (HOST ONLY) ----------
-  // Все события управления видео — только от HOST.
-  // Если не HOST — сервер просто игнорирует.
+  // ВАЖНО: принимаем разные имена событий и разные ключи payload, чтобы client.js не ломался.
 
-  socket.on("video-load", (payload = {}) => {
+  function requireHost(room) {
+    if (!isHost(room, socket)) return false;
+    return true;
+  }
+
+  function handleLoad(payload = {}) {
     const roomId = socket.data.roomId;
     if (!roomId) return;
     const room = rooms.get(roomId);
     if (!room) return;
+    if (!requireHost(room)) return;
 
-    if (!mustBeHost(socket, room)) return; // 🔒 ONLY HOST
-
-    const videoId = String(payload.videoId || "").trim();
+    const videoId = String(payload.videoId || payload.id || payload.v || payload.video || "").trim();
     if (!videoId) return;
 
-    room.video.videoId = videoId;
-    room.video.time = 0;
-    room.video.playing = false;
-    room.video.updatedAt = now();
+    room.videoId = videoId;
+    room.playing = false;
+    room.time = 0;
+    room.updatedAt = now();
 
-    io.to(roomId).emit("video-load", {
-      videoId: room.video.videoId,
-      time: room.video.time,
-      playing: room.video.playing,
+    emitMany(io.to(roomId), OUT.VIDEO_LOAD, { videoId });
+    emitMany(io.to(roomId), OUT.SYNC_TIME, {
+      videoId: room.videoId,
+      time: 0,
+      playing: false,
+      updatedAt: room.updatedAt,
     });
 
-    io.to(roomId).emit("room-state", statePayload(room, socket.id));
-  });
+    // обновим стейт (некоторые клиенты по нему рисуют панель)
+    emitMany(io.to(roomId), OUT.ROOM_STATE, roomStatePayload(room, roomId, socket.id));
+  }
 
-  socket.on("video-play", (payload = {}) => {
+  function handlePlay(payload = {}) {
     const roomId = socket.data.roomId;
     if (!roomId) return;
     const room = rooms.get(roomId);
     if (!room) return;
+    if (!requireHost(room)) return;
 
-    if (!mustBeHost(socket, room)) return; // 🔒 ONLY HOST
+    const t = Number(payload.time ?? payload.t ?? getServerTime(room));
+    room.time = Number.isFinite(t) ? t : getServerTime(room);
+    room.playing = true;
+    room.updatedAt = now();
 
-    const t = Number(payload.time || serverTime(room));
-    room.video.time = Number.isFinite(t) ? t : serverTime(room);
-    room.video.playing = true;
-    room.video.updatedAt = now();
+    emitMany(io.to(roomId), OUT.VIDEO_PLAY, { time: room.time });
+  }
 
-    io.to(roomId).emit("video-play", { time: room.video.time });
-  });
-
-  socket.on("video-pause", (payload = {}) => {
+  function handlePause(payload = {}) {
     const roomId = socket.data.roomId;
     if (!roomId) return;
     const room = rooms.get(roomId);
     if (!room) return;
+    if (!requireHost(room)) return;
 
-    if (!mustBeHost(socket, room)) return; // 🔒 ONLY HOST
+    const t = Number(payload.time ?? payload.t ?? getServerTime(room));
+    room.time = Number.isFinite(t) ? t : getServerTime(room);
+    room.playing = false;
+    room.updatedAt = now();
 
-    const t = Number(payload.time || serverTime(room));
-    room.video.time = Number.isFinite(t) ? t : serverTime(room);
-    room.video.playing = false;
-    room.video.updatedAt = now();
+    emitMany(io.to(roomId), OUT.VIDEO_PAUSE, { time: room.time });
+  }
 
-    io.to(roomId).emit("video-pause", { time: room.video.time });
-  });
-
-  socket.on("video-seek", (payload = {}) => {
+  function handleSeek(payload = {}) {
     const roomId = socket.data.roomId;
     if (!roomId) return;
     const room = rooms.get(roomId);
     if (!room) return;
+    if (!requireHost(room)) return;
 
-    if (!mustBeHost(socket, room)) return; // 🔒 ONLY HOST
+    const t = Number(payload.time ?? payload.t ?? 0);
+    room.time = Number.isFinite(t) ? Math.max(0, t) : room.time;
+    room.updatedAt = now();
 
-    const t = Number(payload.time || 0);
-    room.video.time = Number.isFinite(t) ? Math.max(0, t) : room.video.time;
-    room.video.updatedAt = now();
+    emitMany(io.to(roomId), OUT.VIDEO_SEEK, { time: room.time });
+  }
 
-    io.to(roomId).emit("video-seek", { time: room.video.time });
-  });
-
-  // optional: host beacon / sync
-  socket.on("sync-time", (payload = {}) => {
+  function handleSync(payload = {}) {
     const roomId = socket.data.roomId;
     if (!roomId) return;
     const room = rooms.get(roomId);
     if (!room) return;
+    if (!requireHost(room)) return;
 
-    if (!mustBeHost(socket, room)) return; // 🔒 ONLY HOST
+    const t = Number(payload.time ?? payload.t ?? getServerTime(room));
+    const playing = !!(payload.playing ?? payload.isPlaying ?? payload.p);
 
-    const t = Number(payload.time || serverTime(room));
-    const playing = !!payload.playing;
+    room.time = Number.isFinite(t) ? t : getServerTime(room);
+    room.playing = playing;
+    room.updatedAt = now();
 
-    room.video.time = Number.isFinite(t) ? t : serverTime(room);
-    room.video.playing = playing;
-    room.video.updatedAt = now();
-
-    io.to(roomId).emit("sync-time", {
-      videoId: room.video.videoId,
-      time: serverTime(room),
-      playing: room.video.playing,
+    emitMany(io.to(roomId), OUT.SYNC_TIME, {
+      videoId: room.videoId,
+      time: getServerTime(room),
+      playing: room.playing,
+      updatedAt: room.updatedAt,
     });
-  });
+  }
 
-  // request state
-  socket.on("get-state", () => {
+  // входящие алиасы
+  socket.on("video-load", handleLoad);
+  socket.on("videoLoad", handleLoad);
+  socket.on("load-video", handleLoad);
+  socket.on("loadVideo", handleLoad);
+
+  socket.on("video-play", handlePlay);
+  socket.on("videoPlay", handlePlay);
+  socket.on("play-video", handlePlay);
+  socket.on("playVideo", handlePlay);
+
+  socket.on("video-pause", handlePause);
+  socket.on("videoPause", handlePause);
+  socket.on("pause-video", handlePause);
+  socket.on("pauseVideo", handlePause);
+
+  socket.on("video-seek", handleSeek);
+  socket.on("videoSeek", handleSeek);
+  socket.on("seek-video", handleSeek);
+  socket.on("seekVideo", handleSeek);
+
+  socket.on("sync-time", handleSync);
+  socket.on("syncTime", handleSync);
+  socket.on("sync", handleSync);
+
+  // запрос состояния (aliases)
+  const getState = () => {
     const roomId = socket.data.roomId;
     if (!roomId) return;
     const room = rooms.get(roomId);
     if (!room) return;
-    socket.emit("room-state", statePayload(room, socket.id));
-  });
+    emitMany(socket, OUT.ROOM_STATE, roomStatePayload(room, roomId, socket.id));
+  };
+  socket.on("get-state", getState);
+  socket.on("getState", getState);
 });
 
-// ---------- Listen (Render friendly) ----------
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, "0.0.0.0", () => {
-  console.log("Server running on port", PORT);
-});
+server.listen(PORT, "0.0.0.0", () => console.log("Server on", PORT));
