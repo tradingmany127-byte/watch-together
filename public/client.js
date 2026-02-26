@@ -116,7 +116,9 @@ let pendingLoad = null;     // { videoId, positionSec, isPlaying }
 let pendingSeek = null;     // number
 let pendingPlay = null;     // number
 let pendingPause = null;    // number
-
+const SOFT_SYNC_THRESHOLD = 0.8;
+const RATE_ADJUST_MS = 1500;
+let rateResetTimer = null;
   if (!player || !playerReady) return;
 
   if (pendingLoad) {
