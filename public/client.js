@@ -178,12 +178,8 @@
               if (!isHost) return;
 
               // 1 = playing, 2 = paused
-              const st = e.data;
-              if (st === YT.PlayerState.PLAYING) {
-                emitPlay();
-              } else if (st === YT.PlayerState.PAUSED) {
-                emitPause();
-              }
+              
+              
             }
           }
         });
