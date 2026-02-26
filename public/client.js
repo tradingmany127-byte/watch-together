@@ -119,6 +119,10 @@ let pendingPause = null;    // number
 const SYNC_THRESHOLD = 1.2;       // меньше — не трогаем
 const HARD_SYNC_THRESHOLD = 4.0;  // сильно улетели — жестко синкаем
 const EMIT_INTERVAL_MS = 1200;    // хост шлет таймкод
+const SOFT_SYNC_THRESHOLD = 0.8;
+const RATE_ADJUST_MS = 1500;
+let rateResetTimer = null;
+let lastSyncApplyAt = 0;
 let lastSyncApplyAt = 0;
 function applyIfReady() {
   if (!player || !playerReady) return;
@@ -375,28 +379,15 @@ setStatus("✅ Видео синхронизировано.");
 socket.on("video-play", ({ time }) => {
   if (isIHost) return;
   const target = Number(time || 0);
-  const cur = safeGetTime();
-  const diff = Math.abs(cur - target);
+  maybeSyncToTarget(target);
 
-if (diff > HARD_SYNC_THRESHOLD) {
-  seekTo(target);
-} else if (diff > SYNC_THRESHOLD) {
-  const now = Date.now();
-  if (now - lastSyncApplyAt > 900) {
-    lastSyncApplyAt = now;
-    seekTo(target);
-  }
-
-  }
-}
   play();
 });
 
 socket.on("video-pause", ({ time }) => {
   if (isIHost) return;
   const target = Number(time || 0);
-  const cur = safeGetTime();
-  if (Math.abs(cur - target) > 0.9) seekTo(target);
+  maybeSyncToTarget(target);
   pause();
 });
 
