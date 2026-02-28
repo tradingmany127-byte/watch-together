@@ -145,6 +145,7 @@ window.onYouTubeIframeAPIReady = () => {
 function onPlayerStateChange(e) {
   if (!playerReady || suppress) return;
   if (!player) return;
+  if (!isHost) return; // only host may emit play/pause intents
 
   const t = safeTime();
 
@@ -175,6 +176,7 @@ async function ensureVideoLoaded(videoId) {
 
 async function applySync(state) {
   if (!player || !playerReady) return;
+  if (isHost) return; // host keeps authoritative state — don't apply remote syncs
   if (!state.videoId) return;
 
   await ensureVideoLoaded(state.videoId);
@@ -203,6 +205,7 @@ async function applySync(state) {
 let lastTime = 0;
 setInterval(() => {
   if (!player || !playerReady) return;
+  if (!isHost) { lastTime = safeTime(); return; } // only host emits seeks
   const cur = safeTime();
   const jump = Math.abs(cur - lastTime);
 
@@ -227,6 +230,11 @@ document.getElementById("loadBtn").onclick = () => {
   const id = extractYouTubeId(ytInput.value);
   if (!id) {
     toast("Ссылка не распознана", "Вставь YouTube ссылку (watch/youtu.be/shorts) или ID (11 символов).");
+    return;
+  }
+  if (!isHost) {
+    toast("Только HOST", "Только создатель комнаты может загружать видео.");
+    ytInput.value = "";
     return;
   }
   socket.emit("video:set", { roomId, videoId: id, atSec: 0 });
