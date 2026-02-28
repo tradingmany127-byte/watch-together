@@ -6,32 +6,10 @@
   <title>SyncWatch · Room</title>
   <link rel="stylesheet" href="/style.css"/>
   <script src="/socket.io/socket.io.js"></script>
-  <script src="https://www.youtube.com/iframe_api"></script>
 </head>
 <body class="bg">
   <div class="roomWrap">
-
-    <div class="topBar">
-      <div class="brand small">
-        <div class="dot"></div>
-        <div>
-          <div class="title" id="roomTitle">Комната</div>
-          <div class="subtitle" id="roomSub">Подключение...</div>
-        </div>
-      </div>
-
-      <div class="topRight">
-        <button class="btn ghost" id="takeHostBtn">Я HOST</button>
-        <div class="pill" id="mePill">Вы: —</div>
-        <div class="pill" id="hostPill">HOST: —</div>
-        <button class="btn ghost" id="inviteBtn">Пригласить ссылкой</button>
-        <button class="btn danger" id="leaveBtn">Leave</button>
-      </div>
-    </div>
-
-    <!-- красивый экран "не найдена" -->
-    <div class="card notFound" id="notFound" style="display:none;">
-      <div class="nfTitle">Комната не найдена</div>
+ 
       <div class="nfText" id="nfText">Комнаты не существует.</div>
       <div class="hr"></div>
       <button class="btn primary" id="backBtn">Вернуться в меню</button>
@@ -81,30 +59,7 @@
   </div>
 
   <div class="toast" id="toast"></div>
-<script src="https://www.youtube.com/iframe_api"></script>
-
-<script>
-let player = null;
-let playerReady = false;
-
-window.onYouTubeIframeAPIReady = function() {
-  player = new YT.Player('player', {
-    height: '100%',
-    width: '100%',
-    videoId: '',
-    playerVars: {
-      playsinline: 1
-    },
-    events: {
-      onReady: function() {
-        playerReady = true;
-        console.log("YouTube Player Ready");
-        applyifReady ();
-      }
-    }
-  });
-};
-</script>
+  <script src="https://www.youtube.com/iframe_api"></script>
   <script src="/app.js"></script>
 </body>
 </html>

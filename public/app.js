@@ -1,5 +1,13 @@
 const socket = io();
 
+// globals used across room scripts
+let player = null;
+let playerReady = false;
+let suppress = false;
+let lastSeekEmit = 0;
+let myName = "";
+let isHost = false;
+
 const roomId = location.pathname.split("/")[2] || "";
 const qs = new URLSearchParams(location.search);
 const name = (qs.get("name") || "").trim();
